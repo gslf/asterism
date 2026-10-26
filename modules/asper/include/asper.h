@@ -1,0 +1,413 @@
+/*
+ * asper.h — ⁂ asper — ⁂ asterism persistence
+ *
+ * An identitarian memory system for small LLMs.
+ * Public C API of libasper.
+ *
+ * Contract notes:
+ *   - All strings are UTF-8.
+ *   - All functions return asper_err except destructors and accessors.
+ *   - Every out-allocation is released with the matching asper_free /
+ *     asper_records_free / asper_strings_free.
+ *   - asper_open / asper_close are not thread-safe with respect to the same
+ *     context; everything else is.
+ *   - No global state: multiple contexts over different roots may coexist.
+ *   - asper_last_error is per-context (not per-thread): the message refers to
+ *     the most recent failing call on that context.
+ *
+ * License: MIT — per aspera ad astra.
+ */
+
+#ifndef ASPER_H
+#define ASPER_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct asper_ctx asper_ctx;
+struct asmodel_manager;
+
+typedef enum {
+  ASPER_OK = 0,
+  ASPER_ERR_IO,        /* filesystem failure                                */
+  ASPER_ERR_PARSE,     /* malformed xCDN / journal / cache                  */
+  ASPER_ERR_CONFIG,    /* invalid configuration value                       */
+  ASPER_ERR_MODEL,     /* model load / inference failure                    */
+  ASPER_ERR_NOT_FOUND, /* unknown id / project / no recall answer           */
+  ASPER_ERR_LOCKED,    /* operation rejected on a locked record             */
+  ASPER_ERR_INVALID,   /* invalid argument or state                         */
+  ASPER_ERR_BUSY,      /* worker unavailable                                */
+  ASPER_ERR_NOMEM,     /* allocation failure                                */
+  ASPER_ERR_TIMEOUT,   /* request deadline expired                          */
+  ASPER_ERR_CANCELLED, /* request cancelled                                 */
+  ASPER_ERR_LIMIT,     /* input/output or resource budget exceeded          */
+  ASPER_ERR_UNSUPPORTED /* backend cannot provide the requested capability   */
+} asper_err;
+
+/* Stable name of an error code, e.g. "ASPER_ERR_IO". */
+const char *asper_err_name(asper_err e);
+
+typedef enum {
+  ASPER_SECTION_IDENTITY = 0,
+  ASPER_SECTION_CONTEXT  = 1,
+  ASPER_SECTION_PROJECT  = 2,
+  /* Only valid for asper_memory_search / asper_memory_list: all sections. */
+  ASPER_SECTION_ANY      = 3
+} asper_section;
+
+/* ---- lossless scoped source memory ------------------------------------ */
+
+/* Events are the immutable source of truth.  Curated records, checkpoints,
+ * summaries and embeddings are derived views and may always be rebuilt from
+ * this log.  Scopes are host-defined stable slugs (for example an ⁂ asngn
+ * session id). */
+typedef enum {
+  ASPER_EVENT_USER = 0,
+  ASPER_EVENT_ASSISTANT,
+  ASPER_EVENT_DECISION,
+  ASPER_EVENT_TOOL_CALL,
+  ASPER_EVENT_TOOL_RESULT,
+  ASPER_EVENT_DIAGNOSTIC,
+  ASPER_EVENT_CHECKPOINT,
+  ASPER_EVENT_ARTIFACT
+} asper_event_kind;
+
+typedef struct {
+  const char *scope;
+  asper_event_kind kind;
+  const char *text;       /* UTF-8; copied and persisted before return */
+  const char *object_ref; /* optional sha256:<hex> source object; for user/assistant
+                          * events without one, runtime captures the active project */
+  int pinned;
+} asper_event_input;
+
+typedef struct {
+  char id[37];
+  unsigned long long sequence;
+  long long at;
+  asper_event_kind kind;
+  char *text;             /* asper_events_free */
+  char object_ref[72];
+  int pinned;
+} asper_event;
+
+/* Synchronous and durable.  Success means the exact event is in the scoped
+ * append-only source log; it never depends on curator availability. */
+asper_err asper_event_append(asper_ctx *c, const asper_event_input *event,
+                             char out_id[37]);
+asper_err asper_event_list(asper_ctx *c, const char *scope,
+                           asper_event **out, size_t *out_n);
+/* Exact event search, stable ascending sequence cursor; limit is 1..1000.
+ * The query is a literal UTF-8 substring, not semantic similarity. */
+asper_err asper_event_search(asper_ctx *c, const char *scope, const char *query,
+                             unsigned long long after_sequence, size_t limit,
+                             asper_event **out, size_t *out_n,
+                             unsigned long long *next_sequence);
+asper_err asper_event_set_pinned(asper_ctx *c, const char *scope,
+                                 const char *event_id, int pinned);
+void asper_events_free(asper_event *events, size_t n);
+
+/* Content-addressed exact objects, up to 64 MiB each. Writes are atomic and
+ * deduplicated; references use lowercase SHA-256. Range reads verify the whole
+ * object hash while allocating only the selected bytes plus a small buffer.
+ * offset/max_bytes implement exact range reads; max_bytes == 0 means the
+ * complete remainder. Corruption returns PARSE with no partial data. */
+asper_err asper_object_put(asper_ctx *c, const void *data, size_t size,
+                           char out_ref[72]);
+asper_err asper_object_read(asper_ctx *c, const char *object_ref,
+                            size_t offset, size_t max_bytes,
+                            void **out_data, size_t *out_size);
+
+/* A checkpoint is the current structured working-memory view for one scope.
+ * Replacing it is atomic; every committed value is also appended to the
+ * immutable event log with kind ASPER_EVENT_CHECKPOINT. */
+asper_err asper_checkpoint_commit(asper_ctx *c, const char *scope,
+                                   const char *text_utf8,
+                                   char out_event_id[37]);
+asper_err asper_checkpoint_load(asper_ctx *c, const char *scope,
+                                 char **out_text);
+
+typedef int (*asper_token_count_fn)(const char *utf8, void *userdata);
+
+typedef struct {
+  const char *scope;
+  const char *base_system_prompt;
+  const char *query;
+  size_t history_tokens;       /* selected history and heading; 0 excludes it */
+  size_t checkpoint_tokens;    /* 0 excludes the checkpoint view */
+  asper_token_count_fn count_tokens; /* NULL => deterministic heuristic */
+  void *count_userdata;
+} asper_context_request;
+
+typedef struct {
+  char *system_prompt; /* base + semantic identity/context/project memory */
+  char *context_text;  /* checkpoint + selected exact source events */
+  size_t system_tokens;
+  size_t context_tokens;
+  size_t events_included;
+  size_t events_available;
+} asper_context_pack;
+
+/* Select from an indexed event prefix and pin snapshot. Context payloads are
+ * capped at 4 MiB and 4096 events, independently of the counting callback.
+ * Headings and the final joined text are budgeted; non-additive counts that
+ * exceed the envelope return LIMIT with no partial pack. Source data is never
+ * deleted. NULL/failed counters use a heuristic, not an exact tokenizer. */
+asper_err asper_context_materialize(asper_ctx *c,
+                                    const asper_context_request *request,
+                                    asper_context_pack *out);
+void asper_context_pack_free(asper_context_pack *pack);
+
+/* Log levels for asper_set_logger callbacks. */
+enum {
+  ASPER_LOG_ERROR = 0,
+  ASPER_LOG_WARN  = 1,
+  ASPER_LOG_INFO  = 2,
+  ASPER_LOG_DEBUG = 3
+};
+
+/* A borrowed process-wide model manager; it must outlive the context. */
+typedef struct {
+  struct asmodel_manager *manager;
+  const char *curator_model_id;
+  const char *embedding_model_id;
+  int embedding_dim;
+} asper_model_binding;
+
+typedef struct {
+  const char *memory_root; /* store directory; created if missing          */
+  const char *config_path; /* optional config.xcdn; NULL = defaults        */
+  /* Curator and embedder models; NULL runs without curation and retrieval. */
+  const asper_model_binding *models;
+} asper_open_params;
+
+asper_err   asper_open(const asper_open_params *p, asper_ctx **out);
+/* Flush, compact, join worker, release everything. NULL is a no-op. */
+void        asper_close(asper_ctx *c);
+/* UTF-8 message for the most recent error on this context; ctx-owned. */
+const char *asper_last_error(const asper_ctx *c);
+
+/* ---- records ----------------------------------------------------------- */
+
+typedef struct asper_record asper_record;
+
+/* Evidence is supplied by the host, never by the curator's own verdict.
+ * Empty workspace/commit mean unknown, not evidence of current validity. */
+typedef enum {
+  ASPER_EVIDENCE_DECLARED = 0, ASPER_EVIDENCE_OBSERVED, ASPER_EVIDENCE_INFERRED
+} asper_evidence_kind;
+typedef enum {
+  ASPER_CONFIDENCE_UNKNOWN = 0, ASPER_CONFIDENCE_HEURISTIC, ASPER_CONFIDENCE_MEASURED
+} asper_confidence_kind;
+typedef struct {
+  asper_evidence_kind kind;
+  asper_confidence_kind confidence_kind;
+  double confidence;
+  long long observed_at, expires_at; /* Unix seconds; 0 = host default */
+  char provenance[256];             /* source URI, tool invocation, or user */
+  char workspace[1024];
+  char commit[65];
+} asper_evidence;
+/* Grounding establishes traceable support and current preconditions, not truth.
+ * All offsets are UTF-8 byte ranges [begin,end). Source sequences make exact
+ * reopening independent from a curator summary. Relations bind content hashes. */
+typedef enum {
+  ASPER_KNOWLEDGE_UNVERIFIED = 0, ASPER_KNOWLEDGE_CURRENT,
+  ASPER_KNOWLEDGE_STALE, ASPER_KNOWLEDGE_CONTESTED, ASPER_KNOWLEDGE_REVOKED,
+  ASPER_KNOWLEDGE_UNAVAILABLE
+} asper_knowledge_status;
+typedef enum {
+  ASPER_REL_SUPPORTS = 0, ASPER_REL_CONTRADICTS, ASPER_REL_SUPERSEDES
+} asper_relation_kind;
+typedef struct {
+  char scope[65], event_id[37];
+  unsigned long long sequence;
+  size_t source_begin, source_end, claim_begin, claim_end;
+} asper_source_span;
+typedef struct { char resource[256], version[129]; } asper_dependency;
+typedef struct {
+  asper_relation_kind kind;
+  char record_id[37], content_sha256[65];
+} asper_knowledge_link;
+typedef struct {
+  asper_source_span *sources; size_t sources_n;
+  asper_dependency *dependencies; size_t dependencies_n;
+  asper_knowledge_link *links; size_t links_n;
+  int revoked;
+  char reason[256];
+} asper_grounding;
+/* Each collection is bounded to 16 entries. The host owns the input; it is
+ * copied. expected_revision is 0 for a first definition. Stale revisions fail
+ * with BUSY. A new definition may explicitly replace or revoke earlier support.
+ * Content changes never inherit a grounding for the previous claim. */
+asper_err asper_memory_ground(asper_ctx *c, const char *id, const char *content_sha256,
+    unsigned long long expected_revision, const asper_grounding *grounding);
+asper_err asper_memory_grounding(asper_ctx *c, const char *id, asper_grounding **out,
+    unsigned long long *revision, asper_knowledge_status *status);
+void asper_grounding_free(asper_grounding *grounding);
+typedef struct {
+  char *content;
+  char content_sha256[65];
+  unsigned long long revision, sequence;
+  long long at;
+  asper_grounding *grounding;
+} asper_grounding_revision;
+/* Correction history remains available after record updates/compaction. Cursor
+ * is the global journal sequence, limit is 1..100. Records may be absent from
+ * the live table; history is not automatically pruned or erased. */
+asper_err asper_memory_grounding_history(asper_ctx *c, const char *id,
+    unsigned long long after_sequence, size_t limit, asper_grounding_revision **out,
+    size_t *out_n, unsigned long long *next_sequence);
+void asper_grounding_history_free(asper_grounding_revision *revisions, size_t n);
+const char *asper_knowledge_status_name(asper_knowledge_status status);
+asper_knowledge_status asper_record_knowledge_status(const asper_record *record);
+unsigned long long asper_record_knowledge_revision(const asper_record *record);
+/* Runtime observations are deliberately not restored from disk: a new host
+ * must re-observe resources before a dependent claim can be current. NULL/empty
+ * version means unknown. Resource identifiers are host-defined, scoped keys. */
+asper_err asper_memory_observe_dependency(asper_ctx *c, const char *resource,
+                                         const char *version);
+
+const asper_evidence *asper_record_evidence(const asper_record *r);
+asper_err asper_memory_insert_evidenced(asper_ctx *c, asper_section s,
+    const char *project, const char *content, int locked,
+    const asper_evidence *evidence, char out_id[37]);
+
+const char   *asper_record_id(const asper_record *r);          /* UUID */
+asper_section asper_record_section(const asper_record *r);
+/* Project slug, or NULL when the record is not in a project section. */
+const char   *asper_record_project(const asper_record *r);
+const char   *asper_record_content(const asper_record *r);
+/* "seed" | "manual" | "curator" */
+const char   *asper_record_source(const asper_record *r);
+/* Unix seconds, UTC. */
+long long     asper_record_created_at(const asper_record *r);
+long long     asper_record_updated_at(const asper_record *r);
+long long     asper_record_last_access(const asper_record *r);
+unsigned      asper_record_access_count(const asper_record *r);
+double        asper_record_relevance(const asper_record *r);   /* stored */
+int           asper_record_locked(const asper_record *r);
+int           asper_record_deprecated(const asper_record *r);
+size_t        asper_record_tag_count(const asper_record *r);
+const char   *asper_record_tag(const asper_record *r, size_t i);
+/* Candidate source event UUIDs seen by curation. They do not establish which
+ * passage supports this claim; use asper_memory_grounding for precise support. */
+size_t        asper_record_source_ref_count(const asper_record *r);
+const char   *asper_record_source_ref(const asper_record *r, size_t i);
+/* Retrieval score when the record came from asper_memory_search; else 0. */
+double        asper_record_score(const asper_record *r);
+
+/* Corpus IDs are caller-owned array indices. Vectors may be NULL: exact
+ * matching and BM25 remain available without an embedding backend. */
+typedef struct {
+  const char *path, *symbols, *text;
+  const float *vector;
+} asper_search_document;
+typedef struct {
+  size_t index;
+  double score, bm25, vector, exact, coverage;
+} asper_search_hit;
+asper_err asper_hybrid_search(const asper_search_document *docs, size_t n,
+    const char *query, const float *query_vector, size_t dim,
+    size_t k, asper_search_hit *out, size_t *out_n);
+
+/* ---- recall: pull channel ------------------------------------------------ */
+
+/* Blocking, up to recall.timeout. out_cited/out_cited_n may be NULL if the
+ * citations are unwanted. NOMEM from the curator maps to ASPER_ERR_NOT_FOUND
+ * with *out_answer = NULL. */
+asper_err asper_recall(asper_ctx *c, const char *question,
+                       char **out_answer,
+                       asper_record ***out_cited, size_t *out_cited_n);
+
+/* Explicit project variants do not mutate the context's active project. */
+asper_err asper_recall_project(asper_ctx *c, const char *question,
+    const char *project, char **answer, asper_record ***cited, size_t *cited_n);
+asper_err asper_context_materialize_project(asper_ctx *c,
+    const asper_context_request *request, const char *project, asper_context_pack *out);
+
+/* ---- projects ---------------------------------------------------------- */
+
+/* slug NULL deselects the active project. Unknown slug: creates the project
+ * when projects.autocreate (default), else ASPER_ERR_NOT_FOUND. */
+asper_err asper_project_select(asper_ctx *c, const char *slug);
+asper_err asper_project_list(asper_ctx *c, char ***out_slugs, size_t *out_n);
+/* Active project slug into *out_slug (asper_free), or NULL if none. */
+asper_err asper_project_active(asper_ctx *c, char **out_slug);
+
+/* ---- direct memory access (host tooling) -------------------------------- */
+
+/* project: required iff s == ASPER_SECTION_PROJECT (must be the active
+ * project or an existing one); ignored otherwise. out_id: 36 chars + NUL. */
+asper_err asper_memory_insert(asper_ctx *c, asper_section s,
+                              const char *project, const char *content,
+                              int locked, char out_id[37]);
+asper_err asper_memory_update(asper_ctx *c, const char *id,
+                              const char *content);
+asper_err asper_memory_deprecate(asper_ctx *c, const char *id,
+                                 const char *reason);
+asper_err asper_memory_set_locked(asper_ctx *c, const char *id, int locked);
+/* s may be ASPER_SECTION_ANY. project selects which project's records are
+ * searched; NULL means the active project (with no active project, project
+ * records are absent from the results). */
+asper_err asper_memory_search(asper_ctx *c, asper_section s,
+                              const char *project, const char *query,
+                              size_t k, asper_record ***out, size_t *out_n);
+asper_err asper_memory_list(asper_ctx *c, asper_section s,
+                            const char *project, int include_deprecated,
+                            asper_record ***out, size_t *out_n);
+
+/* ---- lifecycle / maintenance ------------------------------------------- */
+
+/* full != 0: capture and drain current pending source prefixes, then run
+ * maintenance review + compaction. Concurrent appends belong to a later flush.
+ * An input that cannot fit the transcript budget stops the drain with LIMIT.
+ * full == 0: flush access batch + journal to disk. */
+asper_err asper_flush(asper_ctx *c, int full);
+/* ASTERISM_NO_THREADS builds: run due background work on the caller.
+ * Threaded builds: no-op returning ASPER_OK. */
+asper_err asper_tick(asper_ctx *c);
+
+typedef struct {
+  size_t records_identity, records_context, records_project;
+  size_t records_deprecated, journal_ops, cycles_run;
+  size_t ops_applied, ops_rejected, recalls_served;
+  long long last_cycle_at;      /* unix seconds UTC; 0 = never */
+  long long last_compaction_at; /* unix seconds UTC; 0 = never */
+  size_t curation_queued, curation_inflight, curation_bytes;
+  size_t curation_queue_limit;  /* queued + in-flight events; bytes capped at 32 MiB */
+  int curation_backlog;         /* more durable data may need admission; not a count */
+  int curation_suspended;       /* receipt pending; inspect after an interruption */
+  size_t curation_deferred;     /* explicit offline postponements, never acknowledgements */
+} asper_stats;
+asper_err asper_get_stats(asper_ctx *c, asper_stats *out);
+
+typedef struct {
+  int store_ok;
+  int embedder_ok;
+  int curator_ok;
+  int index_dim;
+} asper_readiness;
+asper_err asper_get_readiness(asper_ctx *c, asper_readiness *out);
+
+/* Callback sink, independent of the file log. level: ASPER_LOG_*. The
+ * callback may be invoked concurrently and may re-enter libasper; userdata
+ * synchronization belongs to the host. The default callback writes WARN and
+ * ERROR to stderr. fn NULL disables. */
+typedef void (*asper_log_fn)(int level, const char *msg, void *userdata);
+void asper_set_logger(asper_ctx *c, asper_log_fn fn, void *userdata);
+
+/* ---- memory management -------------------------------------------------- */
+
+void asper_free(void *p);                          /* strings from the API */
+void asper_records_free(asper_record **r, size_t n);
+void asper_strings_free(char **s, size_t n);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ASPER_H */

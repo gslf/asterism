@@ -1,0 +1,17 @@
+# Build trees
+build/
+build-*/
+__pycache__/
+*.egg-info/
+sdk/node_modules/
+
+# Engine-root state never lives in the checkout (see examples/).
+/cache/
+/memory/
+/models/
+/sessions/
+/telemetry/
+/tools/
+/workspace/
+/demo/
+*.log

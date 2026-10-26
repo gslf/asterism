@@ -1,0 +1,310 @@
+/* fakes.c — deterministic test doubles for libasngn. See fakes.h. */
+
+#include "asngn_internal.h"
+#include "fakes.h"
+#include "asmodel_json.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- fake embedder ------------------------------------------------------ */
+
+static int fake_is_space(char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+         ch == '\v' || ch == '\f';
+}
+
+void fake_embed_text(const char *text, float out[FAKE_EMBED_DIM]) {
+  const char *p = text ? text : "";
+  double norm = 0.0;
+  size_t i;
+  for (i = 0; i < FAKE_EMBED_DIM; i++) out[i] = 0.0f;
+  while (*p) {
+    char word[128];
+    size_t w = 0;
+    while (*p && fake_is_space(*p)) p++;
+    while (*p && !fake_is_space(*p)) {
+      char ch = *p++;
+      if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+      if (w + 1 < sizeof word) word[w++] = ch;
+    }
+    if (w > 0) out[core_fnv1a64(word, w) % FAKE_EMBED_DIM] += 1.0f;
+  }
+  for (i = 0; i < FAKE_EMBED_DIM; i++)
+    norm += (double)out[i] * (double)out[i];
+  if (norm > 0.0) {
+    norm = sqrt(norm);
+    for (i = 0; i < FAKE_EMBED_DIM; i++)
+      out[i] = (float)((double)out[i] / norm);
+  }
+}
+
+/* ---- fake model --------------------------------------------------------- */
+
+/* Byte/4 heuristic, min 1 (matches asngn_token_heuristic). */
+static int fake_count(const char *text) {
+  size_t len = text ? strlen(text) : 0;
+  size_t n = len / 4;
+  return n < 1 ? 1 : (int)n;
+}
+
+static void fake_noop_destroy(void *ud) { (void)ud; }
+
+void fake_model_init(fake_model *fm) { memset(fm, 0, sizeof *fm); }
+
+void fake_model_dispose(fake_model *fm) {
+  size_t i;
+  if (!fm) return;
+  for (i = 0; i < fm->n; i++) free(fm->replies[i]);
+  free(fm->replies);
+  free(fm->last_system);
+  free(fm->last_user);
+  free(fm->last_schema); fm->last_schema = NULL;
+  free(fm->last_grammar);
+  free(fm->last_native_results);
+  memset(fm, 0, sizeof *fm);
+}
+
+int fake_model_push(fake_model *fm, const char *reply) {
+  char *copy = core_strdup(reply);
+  if (!copy) return 0;
+  if (fm->n == fm->cap) {
+    size_t ncap = fm->cap ? fm->cap * 2 : 8;
+    char **nr = (char **)realloc(fm->replies, ncap * sizeof *nr);
+    if (!nr) {
+      free(copy);
+      return 0;
+    }
+    fm->replies = nr;
+    fm->cap = ncap;
+  }
+  fm->replies[fm->n++] = copy;
+  return 1;
+}
+
+int fake_model_push_error(fake_model *fm, asngn_err error) {
+  char marker[48];
+  snprintf(marker, sizeof marker, "@asngn:test-error:%d", (int)error);
+  return fake_model_push(fm, marker);
+}
+
+int fake_model_push_native(fake_model *fm, const char *calls_json) {
+  core_buf b; core_buf_init(&b);
+  int ok = asngn_buf_printf(&b, "@asngn:test-native:%s", calls_json) == ASNGN_OK &&
+      fake_model_push(fm, b.data);
+  core_buf_free(&b); return ok;
+}
+
+static asngn_err native_reply(fake_model *fm, const asmodel_input *input,
+    const asngn_gen_params *params, char **text) {
+  static const char prefix[] = "@asngn:test-native:";
+  if (!params->tools || !*text || strncmp(*text, prefix, sizeof prefix - 1)) return ASNGN_OK;
+  fm->native_calls++;
+  core_buf seen; core_buf_init(&seen);
+  for (size_t i = 0; i < input->count; i++) for (size_t j = 0; j < input->messages[i].count; j++) {
+    const asmodel_block *v = &input->messages[i].blocks[j];
+    if (v->kind == ASMODEL_BLOCK_TOOL_RESULT)
+      (void)asngn_buf_printf(&seen, "%s:%s\n", v->id, v->text);
+  }
+  free(fm->last_native_results); fm->last_native_results = core_buf_detach(&seen);
+  core_buf_free(&seen);
+  asmodel_json_value *array = NULL;
+  const char *json = *text + sizeof prefix - 1;
+  if (asmodel_json_parse(json, strlen(json), &array)) return ASNGN_ERR_MODEL;
+  size_t n = asmodel_json_array_len(array);
+  asngn_err e = ASNGN_OK;
+  if (!n || n > 32) e = ASNGN_ERR_MODEL;
+  for (size_t i = 0; e == ASNGN_OK && i < n; i++) {
+    asmodel_json_value *v = asmodel_json_array_at(array, i);
+    const char *id = asmodel_json_string_value(asmodel_json_object_get(v, "id"));
+    const char *name = asmodel_json_string_value(asmodel_json_object_get(v, "name"));
+    const char *args = asmodel_json_string_value(asmodel_json_object_get(v, "arguments"));
+    if (!id || !name || !args) { e = ASNGN_ERR_MODEL; break; }
+    for (size_t j = 0; j < params->tools->count; j++) {
+      const asmodel_tool_schema *schema = &params->tools->schemas[j];
+      if (!strncmp(schema->description, name, strlen(name)) && schema->description[strlen(name)] == ':') {
+        name = schema->name; break;
+      }
+    }
+    asmodel_tool_call *out = &params->tools->output->calls[params->tools->output->count++];
+    out->id = core_strdup(id); out->name = core_strdup(name); out->arguments = core_strdup(args);
+    if (!out->id || !out->name || !out->arguments) e = ASNGN_ERR_NOMEM;
+  }
+  asmodel_json_free(array);
+  free(*text); *text = core_strdup("");
+  return e == ASNGN_OK ? fm->native_error : e;
+}
+
+int fake_model_push_partial_limit(fake_model *fm, const char *partial) {
+  core_buf marker;
+  int ok;
+  core_buf_init(&marker);
+  if (asngn_buf_appends(&marker, "@asngn:test-limit-partial:") != ASNGN_OK ||
+      asngn_buf_appends(&marker, partial != NULL ? partial : "") != ASNGN_OK) {
+    core_buf_free(&marker);
+    return 0;
+  }
+  ok = fake_model_push(fm, marker.data);
+  core_buf_free(&marker);
+  return ok;
+}
+
+static asngn_err fake_model_generate_impl(void *ud, const char *system_prompt,
+                                     const char *user_prompt,
+                                     const char *gbnf,
+                                     const asngn_gen_params *p,
+                                     asngn_token_fn token_cb, void *token_ud,
+                                     volatile int *cancel,
+                                     char **out_text, int *out_tokens_in,
+                                     int *out_tokens_out) {
+  fake_model *fm = (fake_model *)ud;
+  const char *reply = "{action: \"answer\"}\n";
+  if (!fm || !out_text) return ASNGN_ERR_INVALID;
+  if (cancel && *cancel) return ASNGN_ERR_CANCELLED;
+  free(fm->last_system);
+  fm->last_system = core_strdup(system_prompt);
+  free(fm->last_user);
+  fm->last_user = core_strdup(user_prompt);
+  free(fm->last_grammar);
+  fm->last_grammar = core_strdup(gbnf);
+  free(fm->last_schema);
+  fm->last_schema = core_strdup(p->output_schema);
+  fm->had_schema = p->output_schema != NULL;
+  fm->calls++;
+  if (fm->calls <= (int)(sizeof fm->max_tokens_seen /
+                         sizeof fm->max_tokens_seen[0])) {
+    fm->max_tokens_seen[fm->calls - 1] = p->max_tokens;
+    fm->reasoning_seen[fm->calls - 1] = p->reasoning;
+    fm->require_constraint_seen[fm->calls - 1] =
+        p->require_constraint ? 1 : 0;
+    fm->deadline_seen[fm->calls - 1] = p->deadline_ms;
+  }
+  if (fm->next < fm->n) reply = fm->replies[fm->next++];
+  if (strncmp(reply, "@asngn:test-error:", 18) == 0)
+    return (asngn_err)strtol(reply + 18, NULL, 10);
+  if (strncmp(reply, "@asngn:test-limit-partial:", 26) == 0) {
+    reply += 26;
+    *out_text = core_strdup(reply);
+    if (!*out_text) return ASNGN_ERR_NOMEM;
+    if (token_cb) token_cb(reply, token_ud);
+    if (out_tokens_in)
+      *out_tokens_in = fake_count(system_prompt) + fake_count(user_prompt);
+    if (out_tokens_out) *out_tokens_out = fake_count(reply);
+    return ASNGN_ERR_LIMIT;
+  }
+  *out_text = core_strdup(reply);
+  if (!*out_text) return ASNGN_ERR_NOMEM;
+  if (token_cb) token_cb(reply, token_ud);
+  if (out_tokens_in)
+    *out_tokens_in = fake_count(system_prompt) + fake_count(user_prompt);
+  if (out_tokens_out) *out_tokens_out = fake_count(reply);
+  return ASNGN_OK;
+}
+
+static int fake_model_count_tokens(void *ud, const char *text) {
+  (void)ud;
+  return fake_count(text);
+}
+
+static int fake_model_count_prompt_tokens(void *ud, const asmodel_input *input) {
+  (void)ud;
+  /* Eight tokens model the fixed two-message template and assistant
+   * generation marker used by the real backend. */
+  int count = 8;
+  for (size_t i = 0; i < input->count; i++)
+    for (size_t j = 0; j < input->messages[i].count; j++) count += fake_count(input->messages[i].blocks[j].text);
+  return count;
+}
+
+static asngn_err fake_model_embed_one(void *ud, const char *text, int is_query, float *out) {
+  (void)ud; (void)is_query;
+  if (!text || !out) return ASNGN_ERR_INVALID;
+  fake_embed_text(text, out);
+  return ASNGN_OK;
+}
+
+static asngn_err fake_model_embed(void *ud, const char *const *texts, size_t count,
+                                  int is_query, const asmodel_embed_params *params, float *out) {
+  fake_model *fm = ud;
+  if (!is_query) {
+    fm->embedding_batches++; fm->embedding_batch_n = count;
+    for (size_t i = 0; i < count && i < 32; i++)
+      snprintf(fm->embedded_documents[i],128,"%s",texts[i]);
+  } else fm->embedding_queries++;
+  if (params->result_info) memset(params->result_info,0,sizeof *params->result_info);
+  for (size_t i = 0; i < count; i++) {
+    if (params->cancel && *params->cancel) return ASNGN_ERR_CANCELLED;
+    asngn_err e = fake_model_embed_one(ud,texts[i],is_query,out+i*16);
+    if (e != ASNGN_OK) return e;
+    if (params->result_info) params->result_info->completed++;
+  }
+  return ASNGN_OK;
+}
+
+static asngn_err fake_model_generate(void *ud, const asmodel_input *input,
+    const char *gbnf, const asngn_gen_params *p, asngn_token_fn fn, void *fn_ud,
+    volatile int *cancel, char **out, int *in, int *gen) {
+  fake_model *fm = ud;
+  fm->input_messages = input->count;
+  for (size_t i = 0; i < input->count && i < 8; i++) fm->input_roles[i] = input->messages[i].role;
+  const char *sys = input->messages[0].blocks[0].text;
+  const char *user = input->messages[1].blocks[0].text;
+  int ti = 0, to = 0;
+  asngn_err e = fake_model_generate_impl(ud,sys,user,gbnf,p,fn,fn_ud,cancel,out,&ti,&to);
+  if (e == ASNGN_OK) e = native_reply(fm,input,p,out);
+  if (in) *in = ti;
+  if (gen) *gen = to;
+  if (p->result_info) {
+    asmodel_generation_info *info = p->result_info;
+    memset(info,0,sizeof *info); info->input_tokens = ti; info->output_tokens = to;
+    info->usage_known = e == ASNGN_OK || e == ASNGN_ERR_LIMIT;
+    info->json_output = ((fake_model *)ud)->json_output && p->output_schema;
+    info->finish_reason = e == ASNGN_OK ? ASMODEL_FINISH_STOP : e == ASNGN_ERR_LIMIT ?
+        ASMODEL_FINISH_LENGTH : e == ASNGN_ERR_CANCELLED ? ASMODEL_FINISH_CANCELLED : ASMODEL_FINISH_ERROR;
+    if (e == ASNGN_OK && p->tools && p->tools->output->count)
+      info->finish_reason = ASMODEL_FINISH_TOOL_CALLS;
+  }
+  return e;
+}
+
+asngn_model_iface fake_model_iface(fake_model *fm) {
+  asngn_model_iface it;
+  memset(&it, 0, sizeof it);
+  it.ud = fm;
+  it.generate = fake_model_generate;
+  it.count_tokens = fake_model_count_tokens;
+  it.count_prompt_tokens = fake_model_count_prompt_tokens;
+  it.embed = fake_model_embed;
+  it.destroy = fake_noop_destroy;
+  return it;
+}
+
+/* ---- fake clock --------------------------------------------------------- */
+
+static core_time fake_clock_now_cb(void *ud) {
+  return (core_time)((const fake_clock *)ud)->now;
+}
+
+static int64_t fake_clock_mono_cb(void *ud) {
+  return ((const fake_clock *)ud)->mono_ms;
+}
+
+void fake_clock_set(fake_clock *fc, long long unix_now) {
+  fc->now = unix_now;
+  fc->mono_ms = (int64_t)unix_now * 1000;
+}
+
+void fake_clock_advance(fake_clock *fc, long long secs) {
+  fc->now += secs;
+  fc->mono_ms += (int64_t)secs * 1000;
+}
+
+core_clock fake_clock_make(fake_clock *fc) {
+  core_clock c;
+  c.ud = fc;
+  c.now = fake_clock_now_cb;
+  c.mono_ms = fake_clock_mono_cb;
+  return c;
+}

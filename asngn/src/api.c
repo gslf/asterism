@@ -1,0 +1,1345 @@
+/*
+ * api.c — the public C API of libasngn and context lifecycle.
+ *
+ * The TUI and asngn-mcp are pure clients of this surface. All strings
+ * are UTF-8; every out-allocation is released with the matching
+ * asngn_free*; asngn_open/asngn_close are not thread-safe with respect
+ * to the same context, everything else is.
+ *
+ * MIT License — per aspera ad astra.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "asngn_internal.h"
+#include "approval.h"
+#include "astools.h"
+#include "work_state.h"
+
+/* ── version and error names ──────────────────────────────────────────── */
+
+const char *asngn_version(void) { return ASTERISM_VERSION; }
+
+asngn_err asngn_from_core(core_err e) {
+  switch (e) {
+    case CORE_OK: return ASNGN_OK;
+    case CORE_ERR_NOT_FOUND: return ASNGN_ERR_NOT_FOUND;
+    case CORE_ERR_INVALID: return ASNGN_ERR_INVALID;
+    case CORE_ERR_NOMEM: return ASNGN_ERR_NOMEM;
+    case CORE_ERR_BUSY: return ASNGN_ERR_BUSY;
+    case CORE_ERR_IO: break;
+  }
+  return ASNGN_ERR_IO;
+}
+
+char *asngn_realpath(const char *path) {
+  char *out = NULL;
+  return os_realpath(path, &out) == CORE_OK ? out : NULL;
+}
+
+const char *asngn_err_name(asngn_err e) {
+  switch (e) {
+  case ASNGN_OK:              return "ASNGN_OK";
+  case ASNGN_ERR_IO:          return "ASNGN_ERR_IO";
+  case ASNGN_ERR_PARSE:       return "ASNGN_ERR_PARSE";
+  case ASNGN_ERR_CONFIG:      return "ASNGN_ERR_CONFIG";
+  case ASNGN_ERR_MODEL:       return "ASNGN_ERR_MODEL";
+  case ASNGN_ERR_NOT_FOUND:   return "ASNGN_ERR_NOT_FOUND";
+  case ASNGN_ERR_INVALID:     return "ASNGN_ERR_INVALID";
+  case ASNGN_ERR_DENIED:      return "ASNGN_ERR_DENIED";
+  case ASNGN_ERR_TIMEOUT:     return "ASNGN_ERR_TIMEOUT";
+  case ASNGN_ERR_CANCELLED:   return "ASNGN_ERR_CANCELLED";
+  case ASNGN_ERR_BUSY:        return "ASNGN_ERR_BUSY";
+  case ASNGN_ERR_PROTOCOL:    return "ASNGN_ERR_PROTOCOL";
+  case ASNGN_ERR_CONTEXT:     return "ASNGN_ERR_CONTEXT";
+  case ASNGN_ERR_UNSUPPORTED: return "ASNGN_ERR_UNSUPPORTED";
+  case ASNGN_ERR_MODULE:     return "ASNGN_ERR_MODULE";
+  case ASNGN_ERR_NOMEM:       return "ASNGN_ERR_NOMEM";
+  case ASNGN_ERR_LIMIT:       return "ASNGN_ERR_LIMIT";
+  }
+  return "ASNGN_ERR_?";
+}
+
+asngn_err asngn_seterr(asngn_ctx *c, asngn_err e, const char *fmt, ...) {
+  if (c != NULL && fmt != NULL) {
+    va_list ap;
+    os_mutex_lock(&c->err_mu);
+    va_start(ap, fmt);
+    vsnprintf(c->errbuf, sizeof c->errbuf, fmt, ap);
+    va_end(ap);
+    os_mutex_unlock(&c->err_mu);
+  }
+  return e;
+}
+
+const char *asngn_last_error(const asngn_ctx *c) {
+  return c != NULL ? c->errbuf : "";
+}
+
+asngn_err asngn_last_context_diagnostics(
+    asngn_ctx *c, asngn_context_diagnostics *out) {
+  if (c == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  os_mutex_lock(&c->err_mu);
+  *out = c->context_diag;
+  os_mutex_unlock(&c->err_mu);
+  return ASNGN_OK;
+}
+
+/* ── memory management ────────────────────────────────────────────────── */
+
+void asngn_free(void *p) { free(p); }
+
+void asngn_strings_free(char **s, size_t n) {
+  size_t i;
+  if (s == NULL) return;
+  for (i = 0; i < n; i++) free(s[i]);
+  free(s);
+}
+
+void asngn_turn_result_free(asngn_turn_result *r) {
+  if (r == NULL) return;
+  free(r->answer);
+  memset(r, 0, sizeof *r);
+}
+
+/* ── logging callback ─────────────────────────────────────────────────── */
+
+static void default_log_cb(int level, const char *msg, void *ud) {
+  (void)ud;
+  if (level <= ASNGN_LOG_WARN) fprintf(stderr, "%s\n", msg);
+}
+
+void asngn_set_logger(asngn_ctx *c, asngn_log_fn fn, void *ud) {
+  if (c == NULL) return;
+  core_log_set_callback(&c->log, fn, ud);
+}
+
+void asngn_set_event_sink(asngn_ctx *c, asngn_event_fn fn, void *ud) {
+  if (c == NULL) return;
+  os_mutex_lock(&c->tele_mu);
+  c->event_cb = fn;
+  c->event_ud = ud;
+  os_mutex_unlock(&c->tele_mu);
+}
+
+/* ── budget pressure ─────────────────────────────────────────────────── */
+
+double asngn_pressure(asngn_ctx *c, asngn_session *s) {
+  double p = 0.0;
+  if (c->owner) c=c->owner;
+  if (c->cfg.session_tokens > 0 && s != NULL) {
+    double ps = (double)s->spent_tokens / (double)c->cfg.session_tokens;
+    if (ps > p) p = ps;
+  }
+  if (c->cfg.daily_tokens > 0) {
+    double pd = (double)asngn_daily_spend(c) / (double)c->cfg.daily_tokens;
+    if (pd > p) p = pd;
+  }
+  return p;
+}
+
+/* ── open / close ─────────────────────────────────────────────────────── */
+
+static void ctx_locks_init(asngn_ctx *c) {
+  os_rwlock_init(&c->lock);
+  os_mutex_init(&c->err_mu);
+  core_log_init(&c->log);
+  os_mutex_init(&c->tele_mu);
+  os_mutex_init(&c->mod_mu);
+  os_rwlock_init(&c->cache_mu);
+  os_mutex_init(&c->q_mu);
+  os_cond_init(&c->q_cv);
+  os_mutex_init(&c->confirm.mu);
+  os_cond_init(&c->confirm.cv);
+}
+
+static void ctx_locks_destroy(asngn_ctx *c) {
+  os_cond_destroy(&c->confirm.cv);
+  os_mutex_destroy(&c->confirm.mu);
+  os_cond_destroy(&c->q_cv);
+  os_mutex_destroy(&c->q_mu);
+  os_rwlock_destroy(&c->cache_mu);
+  os_mutex_destroy(&c->mod_mu);
+  os_mutex_destroy(&c->tele_mu);
+  core_log_destroy(&c->log);
+  os_mutex_destroy(&c->err_mu);
+  os_rwlock_destroy(&c->lock);
+}
+
+/* Defined with the turn machinery below; used by pin/compact too. */
+static void session_lock_for_update(asngn_ctx *c, asngn_session *s);
+static asngn_err startup_readiness(asngn_ctx *c);
+
+/* Join a config path to the engine root when relative. Returns an owned
+ * string replacing *slot. */
+static asngn_err root_join(asngn_ctx *c, char **slot) {
+  char *joined;
+  if (*slot == NULL || os_path_is_abs(*slot))
+    return ASNGN_OK;
+  joined = os_path_join(c->root, *slot);
+  if (joined == NULL) return ASNGN_ERR_NOMEM;
+  free(*slot);
+  *slot = joined;
+  return ASNGN_OK;
+}
+
+/* No-argument frontends converge on one conventional engine root.  That
+ * location bootstraps config.xcdn discovery; engine.root inside the file
+ * remains authoritative unless an API/CLI override is supplied. */
+char *asngn_default_engine_root(void) {
+  const char *home = getenv("USERPROFILE");
+  if (home == NULL || home[0] == '\0') home = getenv("HOME");
+  if (home == NULL || home[0] == '\0') return core_strdup(".");
+  return os_path_join(home, "asngn");
+}
+
+asngn_err asngn_open_with(const asngn_open_params *p,
+                          const asngn_model_iface *fakes, size_t fakes_n,
+                          const char *const *fake_ids,
+                          const core_clock *clk, asngn_ctx **out) {
+  asngn_ctx *c;
+  asngn_err e;
+  const char *root_in, *bootstrap_root;
+  char *default_root = NULL;
+  size_t i;
+
+  if (out == NULL || p == NULL) return ASNGN_ERR_INVALID;
+  *out = NULL;
+  c = calloc(1, sizeof *c);
+  if (c == NULL) return ASNGN_ERR_NOMEM;
+  ctx_locks_init(c);
+  c->clock = clk != NULL ? *clk : core_clock_system();
+  core_log_set_callback(&c->log, default_log_cb, NULL);
+  c->consumption.utc_day = core_clock_now(&c->clock) / 86400;
+  c->allow_degraded = p->allow_degraded != 0;
+
+  asngn_config_defaults(&c->cfg);
+  bootstrap_root = p->engine_root;
+  if (bootstrap_root == NULL || bootstrap_root[0] == '\0') {
+    default_root = asngn_default_engine_root();
+    if (default_root == NULL) { e = ASNGN_ERR_NOMEM; goto fail; }
+    bootstrap_root = default_root;
+    free(c->cfg.root);
+    c->cfg.root = core_strdup(bootstrap_root);
+    if (c->cfg.root == NULL) { e = ASNGN_ERR_NOMEM; goto fail; }
+  }
+  {
+    /* layout: <engine_root>/config.xcdn is discovered when no
+     * explicit config path is given */
+    const char *cfg_path = p->config_path;
+    char *discovered = NULL;
+    if (cfg_path == NULL) {
+      discovered = os_path_join(bootstrap_root, "config.xcdn");
+      if (discovered != NULL && os_file_exists(discovered))
+        cfg_path = discovered;
+    }
+    e = asngn_config_load(c, &c->cfg, cfg_path);
+    free(discovered);
+  }
+  if (e != ASNGN_OK) goto fail;
+  c->session_workspaces = p->workspace_root == NULL &&
+                          c->cfg.astools_workspace != NULL &&
+                          strcmp(c->cfg.astools_workspace, "session") == 0;
+
+  /* engine root: open param wins over engine.root */
+  root_in = p->engine_root != NULL ? p->engine_root : c->cfg.root;
+  e = os_mkdir_p(root_in);
+  if (e != ASNGN_OK) {
+    e = asngn_seterr(c, e, "engine root %s: cannot create", root_in);
+    goto fail;
+  }
+
+  c->root = asngn_realpath(root_in);
+  if (c->root == NULL) {
+    e = asngn_seterr(c, ASNGN_ERR_IO, "engine root %s: cannot resolve",
+                     root_in);
+    goto fail;
+  }
+  {
+    char *lock_path = os_path_join(c->root, ".writer.lock");
+    c->store_lock = lock_path ? os_store_lock(lock_path) : NULL;
+    free(lock_path);
+    if (!c->store_lock) { e = ASNGN_ERR_BUSY; goto fail; }
+  }
+  e = asngn_workspace_init(c, p);
+  if (e != ASNGN_OK) goto fail;
+  c->sessions_dir = os_path_join(c->root, "sessions");
+  c->cache_dir = os_path_join(c->root, "cache");
+  c->tele_dir = os_path_join(c->root, "telemetry");
+  if (c->sessions_dir == NULL || c->cache_dir == NULL ||
+      c->tele_dir == NULL) {
+    e = ASNGN_ERR_NOMEM;
+    goto fail;
+  }
+  e = os_mkdir_p(c->sessions_dir);
+  if (e == ASNGN_OK) e = os_mkdir_p(c->cache_dir);
+  if (e == ASNGN_OK) e = os_mkdir_p(c->tele_dir);
+  if (e != ASNGN_OK) {
+    e = asngn_seterr(c, e, "engine root %s: cannot create layout",
+                     c->root);
+    goto fail;
+  }
+
+  /* file sinks: relative paths resolve under the engine root */
+  e = root_join(c, &c->cfg.log_path);
+  if (e != ASNGN_OK) goto fail;
+  e = asngn_log_open(c);
+  if (e != ASNGN_OK) goto fail;
+  e = asngn_tele_init(c);
+  if (e != ASNGN_OK) goto fail;
+
+  /* model weights: relative paths resolve under the engine root, like
+   * every other engine-root artifact (the process cwd is arbitrary) */
+  for (i = 0; i < c->cfg.pool_n; i++) {
+    if (c->cfg.pool[i].backend == ASMODEL_BACKEND_OPENAI) continue;
+    e = root_join(c, &c->cfg.pool[i].path);
+    if (e != ASNGN_OK) goto fail;
+  }
+
+  /* model pool, with injected fakes taking their slots up front */
+  for (i = 0; i < c->cfg.pool_n; i++) {
+    size_t f;
+    for (f = 0; f < fakes_n; f++) {
+      if (fake_ids != NULL && fake_ids[f] != NULL &&
+          strcmp(fake_ids[f], c->cfg.pool[i].id) == 0) {
+        c->models[i].iface = fakes[f];
+        c->models[i].injected = true;
+      }
+    }
+  }
+  e = asngn_models_init(c);
+  if (e != ASNGN_OK) goto fail;
+  e = asngn_shared_models_init(c);
+  if (e != ASNGN_OK) goto fail;
+
+  e = asngn_operations_load(c);
+  if (e != ASNGN_OK) goto fail;
+
+  /* modules (degrade on failure) */
+  e = asngn_modules_open(c);
+  if (e != ASNGN_OK) goto fail;
+  e = startup_readiness(c);
+  if (e != ASNGN_OK) goto fail;
+
+  /* caches */
+  e = asngn_cache_init(c);
+  if (e != ASNGN_OK) goto fail;
+  e = asngn_toolcache_init(c);
+  if (e != ASNGN_OK) goto fail;
+
+  /* workers */
+  e = asngn_workers_start(c);
+  if (e != ASNGN_OK) goto fail;
+
+  /* threaded builds preload the role models in the background so the
+   * first turn starts hot; ASTERISM_NO_THREADS keeps the lazy loads */
+  if (!c->no_threads) {
+    os_mutex_lock(&c->q_mu);
+    c->bg_due_warm = true;
+    os_mutex_unlock(&c->q_mu);
+    asngn_background_kick(c);
+  }
+
+  asngn_log(c, ASNGN_LOG_INFO, "session", "asngn %s open at %s",
+            asngn_version(), c->root);
+  free(default_root);
+  *out = c;
+  return ASNGN_OK;
+
+fail:
+  free(default_root);
+  asngn_close(c);
+  return e;
+}
+
+asngn_err asngn_open(const asngn_open_params *p, asngn_ctx **out) {
+  return asngn_open_with(p, NULL, 0, NULL, NULL, out);
+}
+
+asngn_err asngn_workspace_get(asngn_ctx *c, asngn_workspace_info *out) {
+  asngn_err e;
+  if (c == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  e = asngn_workspace_refresh(c);
+  if (e == ASNGN_OK) *out = c->workspace;
+  return e;
+}
+
+void asngn_close(asngn_ctx *c) {
+  if (c == NULL) return;
+  asngn_workers_stop(c);
+  /* close any sessions the host leaked */
+  while (c->sessions_n > 0) {
+    asngn_session *s = c->sessions[c->sessions_n - 1];
+    c->sessions_n--;
+    asngn_session_save_manifest(s);
+    asngn_session_free(s);
+  }
+  free(c->sessions);
+  c->sessions = NULL;
+  asngn_cache_shutdown(c);
+  asngn_toolcache_shutdown(c);
+  asngn_modules_close(c);
+  asngn_shared_models_shutdown(c);
+  asngn_models_shutdown(c);
+  asngn_tele_shutdown(c);
+  asngn_log_close(c);
+  asngn_config_free(&c->cfg);
+  if (c->store_lock) fclose(c->store_lock);
+  free(c->root);
+  free(c->sessions_dir);
+  free(c->cache_dir);
+  free(c->tele_dir);
+  ctx_locks_destroy(c);
+  free(c);
+}
+
+/* ── sessions ─────────────────────────────────────────────────────────── */
+
+const char *asngn_session_slug(const asngn_session *s) {
+  return s != NULL ? s->slug : NULL;
+}
+
+asngn_err asngn_session_workspace(asngn_session *s,
+                                  asngn_workspace_info *out) {
+  asngn_err e;
+  if (s == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  os_rwlock_wrlock(&s->lock);
+  if (s->busy) { e=ASNGN_OK; }
+  else if (s->ctx->session_workspaces) {
+    e = asngn_workspace_info_refresh(s->ctx, &s->workspace);
+  } else {
+    e = asngn_workspace_refresh(s->ctx);
+    if (e == ASNGN_OK) s->workspace = s->ctx->workspace;
+  }
+  *out = s->workspace;
+  os_rwlock_wrunlock(&s->lock);
+  return e;
+}
+
+static asngn_err startup_readiness(asngn_ctx *c) {
+  bool required_slot[ASNGN_MAX_POOL] = {false};
+  bool controlled_slot[ASNGN_MAX_POOL] = {false};
+  size_t i;
+  int r;
+  if (c->cfg.profile != ASNGN_PROFILE_CODING) return ASNGN_OK;
+  if (c->workspace.canonical_root[0] == '\0')
+    return asngn_seterr(c, ASNGN_ERR_CONFIG,
+                        "coding readiness failed: workspace missing");
+
+  /* Build requirements per model before validating them.  One pool slot may
+   * serve several roles; validating on the first role alone made the result
+   * depend on role order (for example compressor before judge). */
+  for (r = 0; r < ASNGN_ROLE_COUNT; r++) {
+    int slot = c->role_slot[r];
+    bool required = true;
+    if (r == ASNGN_ROLE_ROUTER &&
+        c->cfg.classifier == ASNGN_CLASSIFIER_HEURISTIC)
+      required = false;
+    else if (r == ASNGN_ROLE_ADAPTER && !c->cfg.cache_enable)
+      required = false;
+    else if (r == ASNGN_ROLE_JUDGE && c->cfg.judge == ASNGN_JUDGE_OFF)
+      required = false;
+    else if (r == ASNGN_ROLE_EMBEDDER && !c->cfg.cache_enable &&
+             !c->cfg.asper_enable)
+      required = false;
+    if (!required) continue;
+    if (slot < 0 || (size_t)slot >= c->models_n)
+      return asngn_seterr(c, ASNGN_ERR_MODEL,
+                          "coding readiness failed: role %s is unmapped",
+                          asngn_role_name((asngn_role)r));
+    required_slot[slot] = true;
+    if (r == ASNGN_ROLE_PLANNER || r == ASNGN_ROLE_GENERATOR ||
+        r == ASNGN_ROLE_JUDGE || r == ASNGN_ROLE_ROUTER)
+      controlled_slot[slot] = true;
+  }
+
+  for (i = 0; i < c->models_n; i++) {
+    asngn_model_slot *m = &c->models[i];
+    if (!required_slot[i]) continue;
+    /* Remote/OpenAI-compatible slots intentionally have no local weight
+     * path.  Coding readiness must validate a path only for the embedded
+     * backend, otherwise selecting the professional profile makes a valid
+     * LM Studio setup fail at startup. */
+    if (!m->injected && m->cfg.backend == ASMODEL_BACKEND_EMBEDDED &&
+        (m->cfg.path == NULL || !os_file_exists(m->cfg.path))) {
+      if (c->allow_degraded) {
+        asngn_log(c, ASNGN_LOG_WARN, "model",
+                  "coding readiness degraded: model '%s' missing at %s",
+                  m->cfg.id, m->cfg.path != NULL ? m->cfg.path : "(null)");
+      } else {
+        return asngn_seterr(c, ASNGN_ERR_MODEL,
+                            "coding readiness failed: model '%s' missing "
+                            "at %s; pass --allow-degraded to opt in",
+                            m->cfg.id,
+                            m->cfg.path != NULL ? m->cfg.path : "(null)");
+      }
+    }
+    if (!m->injected && m->cfg.backend == ASMODEL_BACKEND_OPENAI &&
+        controlled_slot[i]) {
+      asmodel_capabilities caps = {0};
+      uint64_t need = ASMODEL_CAP_ACTION_SCHEMA |
+                      ASMODEL_CAP_REASONING_OFF;
+      if (asmodel_remote_capabilities(m->cfg.remote_provider, m->cfg.ctx,
+                                      m->cfg.embedding, &caps) != 0 ||
+          (caps.flags & need) != need) {
+        return asngn_seterr(
+            c, ASNGN_ERR_UNSUPPORTED,
+            "coding readiness failed: remote model '%s' uses provider "
+            "profile '%s', which cannot guarantee constrained actions and "
+            "reasoning-off decisions; set provider to llama-server, "
+            "lmstudio, or vllm",
+            m->cfg.id, caps.profile[0] ? caps.profile : "unknown");
+      }
+    }
+  }
+  return asngn_modules_readiness(c);
+}
+
+static int session_slug_cmp(const void *a, const void *b) {
+  const char *const *sa = a;
+  const char *const *sb = b;
+  return strcmp(*sa, *sb);
+}
+
+const char *asngn_usage_mode_name(asngn_usage_mode mode) {
+  switch (mode) {
+  case ASNGN_USAGE_CHAT: return "chat";
+  case ASNGN_USAGE_CODING: return "coding";
+  case ASNGN_USAGE_AUTOMATE: return "automate";
+  }
+  return "unknown";
+}
+
+const char *asngn_security_profile_name(asngn_security_profile profile) {
+  switch (profile) {
+  case ASNGN_SECURITY_CHAT: return "chat";
+  case ASNGN_SECURITY_CODING_READONLY: return "coding-readonly";
+  case ASNGN_SECURITY_CODING_SANDBOXED: return "coding-sandboxed";
+  case ASNGN_SECURITY_AUTOMATION_CI: return "automation-ci";
+  }
+  return "unknown";
+}
+
+static bool usage_mode_valid(asngn_usage_mode mode) {
+  return mode >= ASNGN_USAGE_CHAT && mode <= ASNGN_USAGE_AUTOMATE;
+}
+
+static bool security_profile_valid(asngn_security_profile profile) {
+  return profile >= ASNGN_SECURITY_CHAT &&
+         profile <= ASNGN_SECURITY_AUTOMATION_CI;
+}
+
+asngn_err asngn_session_set_mode(asngn_session *s, asngn_usage_mode mode) {
+  asngn_err e;
+  asngn_usage_mode old_mode;
+  asngn_security_profile old_profile;
+  if (s == NULL || !usage_mode_valid(mode)) return ASNGN_ERR_INVALID;
+  os_rwlock_wrlock(&s->lock);
+  if (s->busy) {
+    os_rwlock_wrunlock(&s->lock);
+    return asngn_seterr(s->ctx, ASNGN_ERR_BUSY,
+                        "session %s: a turn is running", s->slug);
+  }
+  old_mode = s->usage_mode;
+  old_profile = s->security_profile;
+  s->usage_mode = mode;
+  s->security_profile = mode == ASNGN_USAGE_CHAT
+                            ? ASNGN_SECURITY_CHAT
+                            : mode == ASNGN_USAGE_AUTOMATE
+                                  ? ASNGN_SECURITY_AUTOMATION_CI
+                                  : ASNGN_SECURITY_CODING_SANDBOXED;
+  e = asngn_session_save_manifest(s);
+  if (e != ASNGN_OK) {
+    s->usage_mode = old_mode;
+    s->security_profile = old_profile;
+  }
+  os_rwlock_wrunlock(&s->lock);
+  return e;
+}
+
+asngn_err asngn_session_set_security_profile(
+    asngn_session *s, asngn_security_profile profile) {
+  asngn_err e;
+  asngn_security_profile old_profile;
+  if (s == NULL || !security_profile_valid(profile)) return ASNGN_ERR_INVALID;
+  os_rwlock_wrlock(&s->lock);
+  if (s->busy) {
+    os_rwlock_wrunlock(&s->lock);
+    return asngn_seterr(s->ctx, ASNGN_ERR_BUSY,
+                        "session %s: a turn is running", s->slug);
+  }
+  old_profile = s->security_profile;
+  s->security_profile = profile;
+  e = asngn_session_save_manifest(s);
+  if (e != ASNGN_OK) s->security_profile = old_profile;
+  os_rwlock_wrunlock(&s->lock);
+  return e;
+}
+
+asngn_err asngn_session_get_mode(const asngn_session *s,
+                                 asngn_usage_mode *out_mode,
+                                 asngn_security_profile *out_profile) {
+  asngn_session *mutable_session = (asngn_session *)s;
+  if (s == NULL || (out_mode == NULL && out_profile == NULL))
+    return ASNGN_ERR_INVALID;
+  os_rwlock_rdlock(&mutable_session->lock);
+  if (out_mode != NULL) *out_mode = s->usage_mode;
+  if (out_profile != NULL) *out_profile = s->security_profile;
+  os_rwlock_rdunlock(&mutable_session->lock);
+  return ASNGN_OK;
+}
+
+asngn_err asngn_session_open(asngn_ctx *c, const char *slug,
+                             asngn_session **out) {
+  asngn_session *s = NULL;
+  asngn_err e;
+  char gen[16];
+  size_t i;
+
+  if (c == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  *out = NULL;
+  if (slug == NULL) {
+    /* generated slug: s-<8 hex of a uuid> */
+    char id[37];
+    core_uuid_v4(id);
+    snprintf(gen, sizeof gen, "s-%.8s", id);
+    slug = gen;
+  }
+  os_rwlock_wrlock(&c->lock);
+  for (i = 0; i < c->sessions_n; i++) {
+    if (strcmp(c->sessions[i]->slug, slug) == 0) {
+      os_rwlock_wrunlock(&c->lock);
+      return asngn_seterr(c, ASNGN_ERR_BUSY,
+                          "session %s is already open", slug);
+    }
+  }
+  os_rwlock_wrunlock(&c->lock);
+
+  e = asngn_session_load(c, slug, &s);
+  if (e != ASNGN_OK) return e;
+
+  os_rwlock_wrlock(&c->lock);
+  if (c->sessions_n == c->sessions_cap) {
+    size_t cap = c->sessions_cap != 0 ? c->sessions_cap * 2 : 4;
+    asngn_session **ns = realloc(c->sessions, cap * sizeof *ns);
+    if (ns == NULL) {
+      os_rwlock_wrunlock(&c->lock);
+      asngn_session_free(s);
+      return ASNGN_ERR_NOMEM;
+    }
+    c->sessions = ns;
+    c->sessions_cap = cap;
+  }
+  c->sessions[c->sessions_n++] = s;
+  os_rwlock_wrunlock(&c->lock);
+  /* the session's saved project follows it into ⁂ asper (NULL deselects);
+   * a failure only degrades the memory zone, never the open */
+  (void)asngn_modules_project_sync(c, s->project);
+  *out = s;
+  return ASNGN_OK;
+}
+
+void asngn_session_close(asngn_session *s) {
+  asngn_ctx *c;
+  size_t i;
+  bool busy;
+  if (s == NULL) return;
+  c = s->ctx;
+  /* a running turn is cancelled and drained before the free */
+  os_rwlock_wrlock(&s->lock);
+  busy = s->busy;
+  if (busy && s->running != NULL) asngn_task_cancel(s->running);
+  os_rwlock_wrunlock(&s->lock);
+  while (busy) {
+    os_sleep_ms(10);
+    os_rwlock_rdlock(&s->lock);
+    busy = s->busy;
+    os_rwlock_rdunlock(&s->lock);
+  }
+  os_rwlock_wrlock(&c->lock);
+  for (i = 0; i < c->sessions_n; i++) {
+    if (c->sessions[i] == s) {
+      memmove(&c->sessions[i], &c->sessions[i + 1],
+              (c->sessions_n - i - 1) * sizeof *c->sessions);
+      c->sessions_n--;
+      break;
+    }
+  }
+  os_rwlock_wrunlock(&c->lock);
+  asngn_session_save_manifest(s);
+  asngn_session_free(s);
+}
+
+/* Remove one session-owned tree.  The caller constructs dir exclusively as
+ * <canonical sessions_dir>/<validated slug>; recursion is needed because a
+ * session workspace contains user-created project directories. */
+static asngn_err session_rm_dir(const char *dir) {
+  char **files = NULL, **dirs = NULL;
+  size_t n = 0, nd = 0, i;
+  asngn_err e = os_list_dir(dir, &files, &n);
+  if (e != ASNGN_OK) return e;
+  for (i = 0; i < n; i++) {
+    if (e == ASNGN_OK) {
+      char *full = os_path_join(dir, files[i]);
+      if (full == NULL) e = ASNGN_ERR_NOMEM;
+      else {
+        asngn_err re = os_remove_file(full);
+        if (re != ASNGN_OK && re != ASNGN_ERR_NOT_FOUND) e = re;
+        free(full);
+      }
+    }
+    free(files[i]);
+  }
+  free(files);
+  if (e != ASNGN_OK) return e;
+  e = os_list_dirs(dir, &dirs, &nd);
+  if (e != ASNGN_OK) return e;
+  for (i = 0; i < nd; i++) {
+    if (e == ASNGN_OK) {
+      char *full = os_path_join(dir, dirs[i]);
+      if (full == NULL) e = ASNGN_ERR_NOMEM;
+      else {
+        e = session_rm_dir(full);
+        free(full);
+      }
+    }
+    free(dirs[i]);
+  }
+  free(dirs);
+  if (e != ASNGN_OK) return e;
+  e = os_remove_dir(dir);
+  return e == ASNGN_ERR_NOT_FOUND ? ASNGN_OK : e;
+}
+
+asngn_err asngn_session_delete(asngn_ctx *c, const char *slug) {
+  char *dir = NULL;
+  size_t i;
+  asngn_err e;
+  if (c == NULL || slug == NULL) return ASNGN_ERR_INVALID;
+  if (!core_slug_valid(slug))
+    return asngn_seterr(c, ASNGN_ERR_INVALID, "invalid slug %s", slug);
+  os_rwlock_rdlock(&c->lock);
+  for (i = 0; i < c->sessions_n; i++) {
+    if (strcmp(c->sessions[i]->slug, slug) == 0) {
+      os_rwlock_rdunlock(&c->lock);
+      return asngn_seterr(c, ASNGN_ERR_BUSY,
+                          "session %s is open; close it first", slug);
+    }
+  }
+  os_rwlock_rdunlock(&c->lock);
+
+  dir = os_path_join(c->sessions_dir, slug);
+  if (dir == NULL) {
+    free(dir);
+    return ASNGN_ERR_NOMEM;
+  }
+  {
+    char *real = asngn_realpath(dir);
+    if (real == NULL) {
+      free(dir);
+      return asngn_seterr(c, ASNGN_ERR_NOT_FOUND, "no session %s", slug);
+    }
+    free(real);
+  }
+  e = session_rm_dir(dir);
+  free(dir);
+  if (e != ASNGN_OK)
+    return asngn_seterr(c, e, "cannot delete session %s", slug);
+  asngn_log(c, ASNGN_LOG_INFO, "session", "deleted %s", slug);
+  return ASNGN_OK;
+}
+
+asngn_err asngn_session_peek(asngn_ctx *c, const char *slug,
+                             asngn_session_peek_info *out) {
+  asngn_session *s = NULL;
+  char *dir, *real;
+  asngn_err e;
+  if (c == NULL || slug == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  memset(out, 0, sizeof *out);
+  if (!core_slug_valid(slug))
+    return asngn_seterr(c, ASNGN_ERR_INVALID, "invalid slug %s", slug);
+  /* loading creates a missing session; a peek must not */
+  dir = os_path_join(c->sessions_dir, slug);
+  if (dir == NULL) return ASNGN_ERR_NOMEM;
+  real = asngn_realpath(dir);
+  free(dir);
+  if (real == NULL)
+    return asngn_seterr(c, ASNGN_ERR_NOT_FOUND, "no session %s", slug);
+  free(real);
+  e = asngn_session_load(c, slug, &s);
+  if (e != ASNGN_OK) return e;
+  out->turns = s->led_n;
+  out->spent_tokens = s->spent_tokens;
+  out->created_at = (long long)s->created_at;
+  if (s->led_n > 0)
+    out->last_turn_at = (long long)s->led[s->led_n - 1].at;
+  if (s->project != NULL)
+    snprintf(out->project, sizeof out->project, "%s", s->project);
+  asngn_session_free(s);
+  return ASNGN_OK;
+}
+
+asngn_err asngn_session_list(asngn_ctx *c, char ***out_slugs,
+                             size_t *out_n) {
+  char **names = NULL;
+  size_t n = 0, i, kept = 0;
+  asngn_err e;
+  if (c == NULL || out_slugs == NULL || out_n == NULL)
+    return ASNGN_ERR_INVALID;
+  *out_slugs = NULL;
+  *out_n = 0;
+  e = os_list_dirs(c->sessions_dir, &names, &n);
+  if (e != ASNGN_OK)
+    return asngn_seterr(c, e, "cannot list %s", c->sessions_dir);
+  for (i = 0; i < n; i++) {
+    if (core_slug_valid(names[i])) {
+      names[kept++] = names[i];
+    } else {
+      free(names[i]);
+    }
+  }
+  /* sort for determinism without quadratic growth on large stores */
+  if (kept > 1) qsort(names, kept, sizeof *names, session_slug_cmp);
+  *out_slugs = names;
+  *out_n = kept;
+  return ASNGN_OK;
+}
+
+asngn_err asngn_session_pin(asngn_session *s, size_t turn, int on) {
+  asngn_ctx *c;
+  size_t i, pinned = 0;
+  bool found = false, changed = false;
+  if (s == NULL) return ASNGN_ERR_INVALID;
+  c = s->ctx;
+  session_lock_for_update(c, s);
+  if (s->busy) {
+    os_rwlock_wrunlock(&s->lock);
+    return asngn_seterr(c, ASNGN_ERR_BUSY,
+                        "session %s: a turn is running", s->slug);
+  }
+  for (i = 0; i < s->log_n; i++)
+    if (s->log[i].pinned) pinned++;
+  for (i = 0; i < s->log_n; i++) {
+    if (s->log[i].n == turn) {
+      found = true;
+      if (on && !s->log[i].pinned) {
+        if (pinned >= (size_t)c->cfg.pinned_max) {
+          os_rwlock_wrunlock(&s->lock);
+          return asngn_seterr(c, ASNGN_ERR_INVALID,
+                              "pin limit reached (%d); unpin first",
+                              c->cfg.pinned_max);
+        }
+        s->log[i].pinned = true;
+        changed = true;
+      } else if (!on) {
+        if (s->log[i].pinned) {
+          s->log[i].pinned = false;
+          changed = true;
+        }
+      }
+      break;
+    }
+  }
+  if (!found) {
+    os_rwlock_wrunlock(&s->lock);
+    return asngn_seterr(c, ASNGN_ERR_NOT_FOUND, "no turn %zu", turn);
+  }
+  if (!changed) {
+    os_rwlock_wrunlock(&s->lock);
+    return ASNGN_OK;
+  }
+  {
+    asngn_err e = ASNGN_OK;
+    if (c->asper_ok && s->log[i].event_id[0])
+      e = asngn_modules_event_pin(c, s->slug, s->log[i].event_id,
+                                   s->log[i].pinned);
+    else if (!c->asper_ok)
+      e = ASNGN_OK; /* ephemeral degraded-mode pin */
+    if (e == ASNGN_OK) e = asngn_session_save_manifest(s);
+    os_rwlock_wrunlock(&s->lock);
+    return e;
+  }
+}
+
+asngn_err asngn_session_transcript(asngn_session *s,
+                                   asngn_transcript_entry **out,
+                                   size_t *out_n) {
+  asngn_transcript_entry *ents;
+  size_t i, n, bytes;
+  char *p;
+  if (s == NULL || out == NULL || out_n == NULL) return ASNGN_ERR_INVALID;
+  *out = NULL;
+  *out_n = 0;
+  os_rwlock_rdlock(&s->lock);
+  n = s->log_n;
+  if (n == 0) {
+    os_rwlock_rdunlock(&s->lock);
+    return ASNGN_OK;
+  }
+  /* one allocation: the entry array followed by the packed texts */
+  bytes = n * sizeof *ents;
+  for (i = 0; i < n; i++)
+    bytes += (s->log[i].text != NULL ? strlen(s->log[i].text) : 0) + 1;
+  ents = malloc(bytes);
+  if (ents == NULL) {
+    os_rwlock_rdunlock(&s->lock);
+    return ASNGN_ERR_NOMEM;
+  }
+  p = (char *)(ents + n);
+  for (i = 0; i < n; i++) {
+    const asngn_turn *t = &s->log[i];
+    const char *txt = t->text != NULL ? t->text : "";
+    size_t len = strlen(txt);
+    memset(&ents[i], 0, sizeof ents[i]);
+    ents[i].turn = t->n;
+    snprintf(ents[i].role, sizeof ents[i].role, "%s", t->role);
+    memcpy(p, txt, len + 1);
+    ents[i].text = p;
+    p += len + 1;
+    ents[i].at = (long long)t->at;
+    ents[i].pinned = t->pinned ? 1 : 0;
+    snprintf(ents[i].tier, sizeof ents[i].tier, "%s", t->tier);
+  }
+  os_rwlock_rdunlock(&s->lock);
+  *out = ents;
+  *out_n = n;
+  return ASNGN_OK;
+}
+
+asngn_err asngn_session_compact(asngn_session *s) {
+  asngn_ctx *c;
+  if (s == NULL) return ASNGN_ERR_INVALID;
+  c = s->ctx;
+  if (c->asper_ok) return asngn_modules_compact(c);
+  return asngn_seterr(c, ASNGN_ERR_UNSUPPORTED,
+                      "session compaction requires asper");
+}
+
+/* ── stats ────────────────────────────────────────────────────────────── */
+
+asngn_err asngn_get_stats(asngn_ctx *c, asngn_stats *out) {
+  if (c == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  os_rwlock_rdlock(&c->lock);
+  *out = c->stats;
+  os_rwlock_rdunlock(&c->lock);
+  return ASNGN_OK;
+}
+
+/* ── caches ───────────────────────────────────────────────────────────── */
+
+asngn_err asngn_cache_clear(asngn_ctx *c, const char *scope) {
+  if (c == NULL) return ASNGN_ERR_INVALID;
+  if (scope != NULL && strcmp(scope, "session") != 0 &&
+      strcmp(scope, "global") != 0)
+    return asngn_seterr(c, ASNGN_ERR_INVALID,
+                        "cache scope must be \"session\", \"global\" or "
+                        "null");
+  return asngn_cache_clear_scope(c, scope);
+}
+
+/* ── feedback and continuation ────────────────────────────────────────── */
+
+asngn_err asngn_feedback(asngn_session *s, size_t turn, int signal) {
+  asngn_err e;
+  if (s == NULL) return ASNGN_ERR_INVALID;
+  os_rwlock_wrlock(&s->lock);
+  e = asngn_ledger_set_feedback(s, turn, signal);
+  os_rwlock_wrunlock(&s->lock);
+  if (e == ASNGN_OK) {
+    os_rwlock_wrlock(&s->ctx->lock);
+    s->ctx->stats.qpt_rolling = asngn_session_qpt(s);
+    os_rwlock_wrunlock(&s->ctx->lock);
+  }
+  return e;
+}
+
+/* ── confirmations ───────────────────────────────────────────────────── */
+
+asngn_err asngn_confirm(asngn_ctx *c, const char *confirm_id, int allow,
+                        int session_wide) {
+  if (c == NULL || confirm_id == NULL) return ASNGN_ERR_INVALID;
+  if (!c->owner && c->lanes_n>1) {
+    for (size_t i=0;i<c->lanes_n;i++) {
+      asngn_err e=asngn_confirm(c->lanes[i],confirm_id,allow,session_wide);
+      if (e!=ASNGN_ERR_NOT_FOUND) return e;
+    }
+    return ASNGN_ERR_NOT_FOUND;
+  }
+  os_mutex_lock(&c->confirm.mu);
+  if (c->confirm.id[0] == '\0' ||
+      strcmp(c->confirm.id, confirm_id) != 0) {
+    os_mutex_unlock(&c->confirm.mu);
+    return asngn_seterr(c, ASNGN_ERR_NOT_FOUND,
+                        "no pending confirmation %s", confirm_id);
+  }
+  if (c->confirm.decided) {
+    bool same = c->confirm.allow == (allow != 0) &&
+        c->confirm.session_wide == (allow && session_wide);
+    os_mutex_unlock(&c->confirm.mu);
+    return same ? ASNGN_OK : ASNGN_ERR_BUSY;
+  }
+  asngn_session *s = c->confirm.session;
+  if (!s) { os_mutex_unlock(&c->confirm.mu); return ASNGN_ERR_NOT_FOUND; }
+  os_rwlock_wrlock(&s->lock);
+  asngn_err saved = asngn_approval_transition(s,
+      allow ? ASNGN_APPROVAL_APPROVED : ASNGN_APPROVAL_DENIED, allow && session_wide);
+  os_rwlock_wrunlock(&s->lock);
+  if (saved != ASNGN_OK) { os_mutex_unlock(&c->confirm.mu); return saved; }
+  c->confirm.decided = 1;
+  c->confirm.allow = allow ? 1 : 0;
+  c->confirm.session_wide = allow && session_wide;
+  os_cond_broadcast(&c->confirm.cv);
+  os_mutex_unlock(&c->confirm.mu);
+  return ASNGN_OK;
+}
+
+/* ── turns ────────────────────────────────────────────────────────────── */
+
+void asngn_turn_state_free(asngn_turn_state *t) {
+  size_t i;
+  if (t == NULL) return;
+  free(t->user_msg);
+  free(t->retrieval_query);
+  for (i = 0; i < t->work_n; i++) free(t->work[i].text);
+  free(t->work);
+  free(t->catalog);
+  astools_selection_free(t->tool_selection);
+  free(t->call_keys);
+  for (i = 0; i < t->tools_list_n; i++) free(t->tools_list[i]);
+  free(t->tools_list);
+  free(t->answer);
+  free(t->native_answer);
+  memset(t, 0, sizeof *t);
+}
+
+static void session_lock_for_update(asngn_ctx *c, asngn_session *s) {
+  (void)c;
+  os_rwlock_wrlock(&s->lock);
+}
+
+static asngn_err submit_common(asngn_session *s, char *gated_msg,
+                               const asngn_submit_opts *opts,
+                               bool continuation, bool retry_up,
+                               asngn_token_fn token_fn,
+                               void *ud, asngn_stream_fn stream_fn,
+                               void *stream_ud, asngn_task **out) {
+  asngn_ctx *c = s->ctx;
+  asngn_task *task;
+  asngn_turn_state *t;
+
+  task = calloc(1, sizeof *task);
+  t = calloc(1, sizeof *t);
+  if (task == NULL || t == NULL) {
+    free(task);
+    free(t);
+    free(gated_msg);
+    return ASNGN_ERR_NOMEM;
+  }
+  t->s = s;
+  t->user_msg = gated_msg;
+  if (opts != NULL) t->opts = *opts;
+  t->continuation = continuation;
+  t->retry_up = retry_up;
+  t->token_cb = token_fn;
+  t->token_ud = ud;
+  t->stream_cb = stream_fn;
+  t->stream_ud = stream_ud;
+  core_uuid_v4(t->span_root);
+  t->gen_slot = -1;
+  { int64_t duration=t->opts.deadline_ms ? t->opts.deadline_ms : c->cfg.turn_deadline_s*1000;
+    t->deadline_mono=duration>0 ? core_clock_mono_ms(&c->clock)+duration : 0;
+  }
+  os_mutex_init(&task->mu);
+  os_cond_init(&task->cv);
+  task->ctx = c;
+  task->session = s;
+  task->turn = t;
+
+  session_lock_for_update(c, s);
+  if (s->busy || s->recovery_required) {
+    os_rwlock_wrunlock(&s->lock);
+    os_cond_destroy(&task->cv);
+    os_mutex_destroy(&task->mu);
+    asngn_turn_state_free(t);
+    free(t);
+    free(task);
+    return asngn_seterr(c, ASNGN_ERR_BUSY,
+                        "session %s: a turn is already running", s->slug);
+  }
+  s->busy = true;
+  t->work_revision = s->work ? s->work->state.revision : 0;
+  s->running = task;
+  t->usage_mode = s->usage_mode;
+  t->security_profile = s->security_profile;
+  if (t->usage_mode == ASNGN_USAGE_CHAT ||
+      t->security_profile == ASNGN_SECURITY_CHAT)
+    t->opts.no_tools = 1;
+  os_rwlock_wrunlock(&s->lock);
+
+  {
+    asngn_err e = asngn_worker_submit(c, task);
+    if (e != ASNGN_OK) {
+      os_rwlock_wrlock(&s->lock);
+      s->busy = false;
+      s->running = NULL;
+      os_rwlock_wrunlock(&s->lock);
+      os_cond_destroy(&task->cv);
+      os_mutex_destroy(&task->mu);
+      asngn_turn_state_free(t);
+      free(t);
+      free(task);
+      return e;
+    }
+  }
+  *out = task;
+  return ASNGN_OK;
+}
+
+asngn_err asngn_submit(asngn_session *s, const char *text_utf8,
+                       const asngn_submit_opts *opts,
+                       asngn_token_fn token_fn, void *ud,
+                       asngn_task **out) {
+  asngn_ctx *c;
+  char *msg;
+  size_t len;
+  asngn_err e;
+
+  if (s == NULL || text_utf8 == NULL || out == NULL)
+    return ASNGN_ERR_INVALID;
+  *out = NULL;
+  c = s->ctx;
+  len = strlen(text_utf8);
+  msg = malloc(len + 1);
+  if (msg == NULL) return ASNGN_ERR_NOMEM;
+  memcpy(msg, text_utf8, len + 1);
+  e = asngn_gate_input(c, msg, &len);
+  if (e != ASNGN_OK) {
+    free(msg);
+    return e;
+  }
+  msg[len] = '\0';
+  return submit_common(s, msg, opts, false, false, token_fn, ud, NULL, NULL,
+                       out);
+}
+
+asngn_err asngn_submit_stream(asngn_session *s, const char *text_utf8,
+                              const asngn_submit_opts *opts,
+                              asngn_stream_fn stream_fn, void *ud,
+                              asngn_task **out) {
+  asngn_ctx *c;
+  char *msg;
+  size_t len;
+  asngn_err e;
+  if (s == NULL || text_utf8 == NULL || out == NULL)
+    return ASNGN_ERR_INVALID;
+  *out = NULL;
+  c = s->ctx;
+  len = strlen(text_utf8);
+  msg = malloc(len + 1);
+  if (msg == NULL) return ASNGN_ERR_NOMEM;
+  memcpy(msg, text_utf8, len + 1);
+  e = asngn_gate_input(c, msg, &len);
+  if (e != ASNGN_OK) {
+    free(msg);
+    return e;
+  }
+  msg[len] = '\0';
+  return submit_common(s, msg, opts, false, false, NULL, NULL, stream_fn, ud,
+                       out);
+}
+
+static asngn_err more_common(asngn_session *s, asngn_token_fn token_fn,
+                             asngn_stream_fn stream_fn, void *ud,
+                             asngn_task **out) {
+  char *msg = NULL;
+  bool have = false, capped = false;
+  if (s == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  *out = NULL;
+  os_rwlock_rdlock(&s->lock);
+  have = s->last_answer != NULL && s->last_user_msg != NULL;
+  capped = s->last_capped;
+  if (have && capped) msg = core_strdup(s->last_user_msg);
+  os_rwlock_rdunlock(&s->lock);
+  if (!have)
+    return asngn_seterr(s->ctx, ASNGN_ERR_NOT_FOUND,
+                        "nothing to continue");
+  if (!capped)
+    return asngn_seterr(s->ctx, ASNGN_ERR_INVALID,
+                        "the last answer was not capped");
+  if (msg == NULL) return ASNGN_ERR_NOMEM;
+  return submit_common(s, msg, NULL, true, false, token_fn, ud, stream_fn, ud,
+                       out);
+}
+
+asngn_err asngn_more(asngn_session *s, asngn_token_fn fn, void *ud,
+                     asngn_task **out) {
+  return more_common(s, fn, NULL, ud, out);
+}
+
+asngn_err asngn_more_stream(asngn_session *s, asngn_stream_fn fn, void *ud,
+                            asngn_task **out) {
+  return more_common(s, NULL, fn, ud, out);
+}
+
+static asngn_err retry_common(asngn_session *s, asngn_token_fn token_fn,
+                              asngn_stream_fn stream_fn, void *ud,
+                              asngn_task **out) {
+  char *msg;
+  asngn_submit_opts opts;
+  if (s == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  *out = NULL;
+  os_rwlock_rdlock(&s->lock);
+  msg = s->last_user_msg != NULL ? core_strdup(s->last_user_msg) : NULL;
+  {
+    bool have = s->last_user_msg != NULL;
+    os_rwlock_rdunlock(&s->lock);
+    if (!have)
+      return asngn_seterr(s->ctx, ASNGN_ERR_NOT_FOUND,
+                          "nothing to retry");
+  }
+  if (msg == NULL) return ASNGN_ERR_NOMEM;
+  memset(&opts, 0, sizeof opts);
+  opts.no_cache = 1;
+  return submit_common(s, msg, &opts, false, true, token_fn, ud, stream_fn, ud,
+                       out);
+}
+
+asngn_err asngn_retry(asngn_session *s, asngn_token_fn fn, void *ud,
+                      asngn_task **out) {
+  return retry_common(s, fn, NULL, ud, out);
+}
+
+asngn_err asngn_retry_stream(asngn_session *s, asngn_stream_fn fn, void *ud,
+                             asngn_task **out) {
+  return retry_common(s, NULL, fn, ud, out);
+}
+
+asngn_err asngn_task_wait(asngn_task *t, uint32_t timeout_ms,
+                          asngn_turn_result *out) {
+  asngn_err verdict;
+  if (t == NULL || out == NULL) return ASNGN_ERR_INVALID;
+  os_mutex_lock(&t->mu);
+  while (!t->done) {
+    int r = os_cond_timedwait(&t->cv, &t->mu,
+                              timeout_ms == 0 ? -1 : (int64_t)timeout_ms);
+    if (r == 0 && !t->done) {
+      os_mutex_unlock(&t->mu);
+      return ASNGN_ERR_BUSY;
+    }
+  }
+  verdict = t->verdict;
+  if (!t->result_taken) {
+    *out = t->result;          /* strings move out exactly once */
+    memset(&t->result, 0, sizeof t->result);
+    t->result_taken = true;
+  } else {
+    *out = t->result;          /* zeroed copy, counters only */
+  }
+  os_mutex_unlock(&t->mu);
+  return verdict;
+}
+
+asngn_err asngn_task_cancel(asngn_task *t) {
+  if (t == NULL) return ASNGN_ERR_INVALID;
+  if (t->turn != NULL) t->turn->cancel = 1;
+  /* Abort the active provider request immediately. The worker relay remains
+   * as a race-safe fallback for cancellation between model calls. */
+  os_mutex_lock(&t->ctx->q_mu);
+  if (t->ctx->call_active && t->ctx->call_turn == t->turn)
+    t->ctx->call_cancel = 1;
+  if (t->ctx->lanes_n>1) for (size_t i=0;i<t->ctx->lanes_n;i++) {
+    asngn_ctx *lane=t->ctx->lanes[i];
+    os_mutex_lock(&lane->q_mu);
+    if (lane->call_active && lane->call_turn==t->turn) lane->call_cancel=1;
+    os_mutex_unlock(&lane->q_mu);
+    os_mutex_lock(&lane->confirm.mu);os_cond_broadcast(&lane->confirm.cv);os_mutex_unlock(&lane->confirm.mu);
+  }
+  os_mutex_unlock(&t->ctx->q_mu);
+  /* wake a possible pending confirmation so the loop can observe it */
+  os_mutex_lock(&t->ctx->confirm.mu);
+  os_cond_broadcast(&t->ctx->confirm.cv);
+  os_mutex_unlock(&t->ctx->confirm.mu);
+  return ASNGN_OK;
+}
+
+void asngn_task_free(asngn_task *t) {
+  if (t == NULL) return;
+  /* the worker owns the task until done; wait for it */
+  os_mutex_lock(&t->mu);
+  while (!t->done) {
+    t->turn->cancel = 1;
+    os_cond_timedwait(&t->cv, &t->mu, 100);
+  }
+  os_mutex_unlock(&t->mu);
+  if (!t->result_taken) asngn_turn_result_free(&t->result);
+  if (t->turn != NULL) {
+    asngn_turn_state_free(t->turn);
+    free(t->turn);
+  }
+  os_cond_destroy(&t->cv);
+  os_mutex_destroy(&t->mu);
+  free(t);
+}
+
+/* ── tick (ASTERISM_NO_THREADS) ──────────────────────────────────────────── */
+
+asngn_err asngn_tick(asngn_ctx *c) {
+  if (c == NULL) return ASNGN_ERR_INVALID;
+#ifdef ASTERISM_NO_THREADS
+  return asngn_run_due_work(c);
+#else
+  return ASNGN_OK;
+#endif
+}
+
+asngn_err asngn_session_retrieval_context(asngn_session *s,
+    const char *active_file, const char *objective) {
+  char *a=core_strdup(active_file ? active_file : "");
+  char *o=core_strdup(objective ? objective : "");
+  if (!s || !a || !o) { free(a);free(o);return ASNGN_ERR_INVALID; }
+  os_rwlock_wrlock(&s->lock);
+  if (s->busy) { os_rwlock_wrunlock(&s->lock);free(a);free(o);return ASNGN_ERR_BUSY; }
+  free(s->active_file);free(s->objective);s->active_file=a;s->objective=o;
+  os_rwlock_wrunlock(&s->lock);return ASNGN_OK;
+}
+
+asngn_err asngn_runtime_create(asngn_ctx *owner, asngn_ctx **out) {
+  asngn_ctx *c=calloc(1,sizeof *c);asngn_err e;
+  if (!c) return ASNGN_ERR_NOMEM;
+  ctx_locks_init(c);c->owner=owner;c->cfg=owner->cfg;c->clock=owner->clock;
+  c->root=owner->root;c->workspace=owner->workspace;
+  c->allow_degraded=owner->allow_degraded;
+  c->asper=owner->asper;c->asper_ok=owner->asper_ok;
+  c->cache_dir=owner->cache_dir;
+  for (size_t i=0;i<owner->models_n;i++) if (owner->models[i].injected) {
+    c->models[i].injected=true;c->models[i].iface=owner->models[i].iface;
+    c->models[i].iface.destroy=NULL;
+  }
+  e=asngn_models_init(c);
+  if (e==ASNGN_OK) e=asngn_shared_models_init(c);
+  if (e!=ASNGN_OK) { asngn_runtime_free(c);return e; }
+  *out=c;return ASNGN_OK;
+}
+void asngn_runtime_free(asngn_ctx *c) {
+  if (!c) return;
+  c->asper=NULL;c->asper_ok=false; /* borrowed source store */
+  asngn_modules_close(c);asngn_models_shutdown(c);
+  free(c->lane_project);ctx_locks_destroy(c);free(c);
+}
+
+const char *asngn_task_id(const asngn_task *task) {
+  return task && task->turn ? task->turn->span_root : NULL;
+}
+
+asngn_err asngn_session_recovery_info(asngn_session *s,
+    size_t *interrupted_turns,size_t *uncertain_actions) {
+  if (!s || !interrupted_turns || !uncertain_actions) return ASNGN_ERR_INVALID;
+  os_rwlock_rdlock(&s->lock);*interrupted_turns=s->interrupted_turns;
+  *uncertain_actions=s->uncertain_actions;os_rwlock_rdunlock(&s->lock);
+  return ASNGN_OK;
+}
+
+uint64_t asngn_task_work_revision(const asngn_task *task) {
+  return task && task->turn ? task->turn->work_revision : 0;
+}

@@ -1,0 +1,506 @@
+/*
+ * asngn.h — ⁂ asngn — the ⁂ asterism agent harness
+ *
+ * A general-purpose harness for real-world workflows and automations.
+ * SLM-friendly and local-first; larger models and remote providers are supported
+ * through adapters that satisfy each role's inference contract.
+ * Public C API of libasngn.
+ *
+ * Contract notes:
+ *   - All strings are UTF-8.
+ *   - Every function returns asngn_err except destructors and accessors.
+ *   - Every out-allocation is released with the matching asngn_free /
+ *     asngn_turn_result_free / asngn_strings_free.
+ *   - asngn_open / asngn_close are not thread-safe with respect to the same
+ *     context; everything else is.
+ *   - No global state: multiple contexts over different roots may coexist.
+ *   - ASNGN_ERR_MODULE carries the module's own error name and message
+ *     through asngn_last_error.
+ *
+ * License: MIT — per aspera ad astra.
+ */
+
+#ifndef ASNGN_H
+#define ASNGN_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* The project version, "major.minor.patch". */
+const char *asngn_version(void);
+
+typedef struct asngn_ctx     asngn_ctx;
+typedef struct asngn_session asngn_session;
+typedef struct asngn_task    asngn_task;
+
+typedef enum {
+  ASNGN_OK = 0,
+  ASNGN_ERR_IO,          /* filesystem failure                              */
+  ASNGN_ERR_PARSE,       /* malformed xCDN / stream / cache                 */
+  ASNGN_ERR_CONFIG,      /* invalid configuration value                     */
+  ASNGN_ERR_MODEL,       /* model load / inference failure                  */
+  ASNGN_ERR_NOT_FOUND,   /* unknown session / turn / entry                  */
+  ASNGN_ERR_INVALID,     /* invalid argument or state                       */
+  ASNGN_ERR_DENIED,      /* confirmation required or denied                 */
+  ASNGN_ERR_TIMEOUT,     /* deadline exceeded                               */
+  ASNGN_ERR_CANCELLED,   /* cancelled by the caller                         */
+  ASNGN_ERR_BUSY,        /* a turn is already running / not done yet        */
+  ASNGN_ERR_PROTOCOL,    /* malformed step / model protocol output          */
+  ASNGN_ERR_CONTEXT,     /* prompt exceeds the model's global context budget */
+  ASNGN_ERR_UNSUPPORTED, /* disabled feature or unsupported operation       */
+  ASNGN_ERR_MODULE,     /* ⁂ asper / ⁂ astools failure (see asngn_last_error)  */
+  ASNGN_ERR_NOMEM,       /* allocation failure                              */
+  ASNGN_ERR_LIMIT        /* model completion exhausted its token budget      */
+} asngn_err;
+
+/* Stable name of an error code, e.g. "ASNGN_ERR_MODEL". */
+const char *asngn_err_name(asngn_err e);
+
+typedef enum {
+  ASNGN_DETAIL_AUTO = 0,
+  ASNGN_DETAIL_TERSE,
+  ASNGN_DETAIL_NORMAL,
+  ASNGN_DETAIL_RICH
+} asngn_detail;
+
+/* Session behavior and action policy are independent. Both persist. */
+typedef enum {
+  ASNGN_USAGE_CHAT = 0,
+  ASNGN_USAGE_CODING,
+  ASNGN_USAGE_AUTOMATE
+} asngn_usage_mode;
+
+typedef enum {
+  ASNGN_SECURITY_CHAT = 0,
+  ASNGN_SECURITY_CODING_READONLY,
+  ASNGN_SECURITY_CODING_SANDBOXED,
+  ASNGN_SECURITY_AUTOMATION_CI
+} asngn_security_profile;
+
+const char *asngn_usage_mode_name(asngn_usage_mode mode);
+const char *asngn_security_profile_name(asngn_security_profile profile);
+
+/* Log levels for asngn_set_logger callbacks. */
+enum {
+  ASNGN_LOG_ERROR = 0,
+  ASNGN_LOG_WARN  = 1,
+  ASNGN_LOG_INFO  = 2,
+  ASNGN_LOG_DEBUG = 3
+};
+
+typedef struct {
+  const char *engine_root; /* override store dir; NULL discovers ~/asngn   */
+  const char *config_path; /* optional config.xcdn; NULL = defaults        */
+  const char *workspace_root; /* external override; NULL=config/session    */
+  const char *project_id;     /* stable project id; NULL=derived           */
+  const char *build_adapter;  /* cmake/npm/cargo/...; NULL=auto-detect      */
+  int         allow_degraded; /* explicit opt-in to missing coding deps     */
+} asngn_open_params;
+
+#define ASNGN_WORKSPACE_PATH_MAX 1024
+typedef struct {
+  char canonical_root[ASNGN_WORKSPACE_PATH_MAX];
+  char repository_root[ASNGN_WORKSPACE_PATH_MAX];
+  char head[65];
+  char branch[128];
+  char project_id[65];
+  char ignore_rules[256];
+  char build_adapter[32];
+  char fingerprint[65];
+} asngn_workspace_info;
+
+asngn_err asngn_workspace_get(asngn_ctx *c, asngn_workspace_info *out);
+
+/* Read-only startup preflight. Does not contact providers or create state.
+ * The caller releases the diagnostic report with asngn_free, even on error. */
+asngn_err asngn_diagnose(const asngn_open_params *params, char **out_report);
+
+asngn_err   asngn_open(const asngn_open_params *p, asngn_ctx **out);
+/* Flush, close modules, join workers, release everything. NULL: no-op. */
+void        asngn_close(asngn_ctx *c);
+/* UTF-8 message for the most recent error on this context; ctx-owned. */
+const char *asngn_last_error(const asngn_ctx *c);
+
+/* Diagnostics for the most recent ASNGN_ERR_CONTEXT. `overhead` includes
+ * chat-template tokens and zone headings/separators not attributable to a
+ * payload. All values are tokens. */
+typedef struct {
+  size_t n_ctx, output_reserve, safety_margin, prompt_budget, prompt_total;
+  size_t system, memory, catalog, summary, verbatim, working, overhead;
+} asngn_context_diagnostics;
+asngn_err asngn_last_context_diagnostics(
+    asngn_ctx *c, asngn_context_diagnostics *out);
+
+/* ---- sessions ---------------------------------------------------------- */
+
+/* slug NULL creates a new session with a generated slug. */
+asngn_err asngn_session_open (asngn_ctx *c, const char *slug,
+                              asngn_session **out);
+void      asngn_session_close(asngn_session *s);
+/* Delete a session's directory (transcript, ledger, summary, blobs).
+ * Fails with ASNGN_ERR_BUSY while that session is open. Irreversible. */
+asngn_err asngn_session_delete(asngn_ctx *c, const char *slug);
+
+/* Read a session's headline numbers from disk without opening it. */
+typedef struct {
+  size_t    turns;         /* committed answer turns (ledger entries) */
+  long long spent_tokens;  /* committed-turn projection, not consumption */
+  long long created_at;    /* unix seconds UTC                        */
+  long long last_turn_at;  /* unix seconds UTC; 0 = no turns yet      */
+  char      project[65];   /* active ⁂ asper project or ""              */
+} asngn_session_peek_info;
+asngn_err asngn_session_peek(asngn_ctx *c, const char *slug,
+                             asngn_session_peek_info *out);
+asngn_err asngn_session_list (asngn_ctx *c, char ***out_slugs,
+                              size_t *out_n);
+/* Slug of an open session; session-owned, valid until close. */
+const char *asngn_session_slug(const asngn_session *s);
+asngn_err asngn_session_set_mode(asngn_session *s, asngn_usage_mode mode);
+asngn_err asngn_session_set_security_profile(
+    asngn_session *s, asngn_security_profile profile);
+asngn_err asngn_session_get_mode(const asngn_session *s,
+                                 asngn_usage_mode *out_mode,
+                                 asngn_security_profile *out_profile);
+asngn_err asngn_session_workspace(asngn_session *s,
+                                  asngn_workspace_info *out);
+asngn_err asngn_session_pin    (asngn_session *s, size_t turn, int on);
+asngn_err asngn_session_compact(asngn_session *s);    /* delegate to ⁂ asper */
+
+/* One transcript entry of an open session (history replay). */
+typedef struct {
+  size_t      turn;      /* ordinal, 1-based                            */
+  char        role[10];  /* "user" | "assistant"                        */
+  const char *text;      /* points into the array allocation            */
+  long long   at;        /* unix seconds UTC                            */
+  int         pinned;
+  char        tier[16];  /* assistant turns: generator tier, else ""    */
+} asngn_transcript_entry;
+/* Full transcript of an open session, oldest first. *out is one
+ * allocation released with asngn_free; *out = NULL, *out_n = 0 when the
+ * session has no turns yet. */
+asngn_err asngn_session_transcript(asngn_session *s,
+                                   asngn_transcript_entry **out,
+                                   size_t *out_n);
+
+/* ---- events (telemetry sink; the TUI is built on this) ----------------- */
+
+/* One #asngn_event xCDN value per call. Called from engine threads; callbacks
+ * must not reenter the API. Exception: a NO_THREADS confirm callback may call
+ * asngn_approval_get and asngn_confirm synchronously. Never submit or close here. */
+typedef void (*asngn_event_fn)(const char *event_xcdn, void *ud);
+void asngn_set_event_sink(asngn_ctx *c, asngn_event_fn fn, void *ud);
+
+/* ---- turns ------------------------------------------------------------- */
+
+/* Accepted answer output; called from the agent worker thread. */
+typedef void (*asngn_token_fn)(const char *utf8, void *ud);
+
+typedef enum {
+  ASNGN_STREAM_OUTPUT = 0,
+  ASNGN_STREAM_REASONING,
+  ASNGN_STREAM_NOTICE
+} asngn_stream_kind;
+
+typedef struct {
+  asngn_stream_kind kind;
+  const char       *text; /* callback-scoped UTF-8 */
+} asngn_stream_event;
+
+/* Transaction UUID is allocated at admission; borrowed until task_free. */
+const char *asngn_task_id(const asngn_task *task);
+/* Acceptance revision captured atomically with turn admission; zero if absent. */
+uint64_t asngn_task_work_revision(const asngn_task *task);
+
+/* Interrupted intents remain in the WAL. Actions may have changed external
+ * state and are never replayed automatically. Counts reflect the last open. */
+asngn_err asngn_session_recovery_info(asngn_session *s,
+    size_t *interrupted_turns, size_t *uncertain_actions);
+
+/* Durable task observations survive task_free and server restart. This API
+ * reads an idle session's journal without replaying effects or repairing files.
+ * FINISHED means a runtime outcome was recorded, not that the goal succeeded.
+ * COMMITTED without FINISHED means the conversation committed before a crash. */
+typedef enum { ASNGN_TASK_INTERRUPTED = 0, ASNGN_TASK_COMMITTED, ASNGN_TASK_FINISHED } asngn_task_record_state;
+typedef struct {
+  char task_id[37], action_id[37];
+  asngn_task_record_state state;
+  asngn_err outcome;             /* valid only when state == FINISHED */
+  uint64_t work_revision;
+  int turn_committed, action_uncertain;
+  char *input, *answer, *last_action, *last_observation;
+} asngn_task_record;
+asngn_err asngn_session_task_read(asngn_session *s, const char *task_id, asngn_task_record **out);
+void asngn_task_record_free(asngn_task_record *record);
+
+/* Editor/host context used for hybrid retrieval; copied, session-local.
+ * Set before submit. NULL clears a field; BUSY while a turn is accepted. */
+asngn_err asngn_session_retrieval_context(asngn_session *s,
+    const char *active_file, const char *objective);
+
+/* Host-owned acceptance contract. Criteria are topologically ordered: each
+ * depends_on bit refers to an earlier array index. A model cannot submit proof.
+ * Labels describe requirements; goal is a display title. Changing constraints
+ * revokes all proof, changing a criterion revokes it and its dependants. */
+#define ASNGN_WORK_CRITERIA_MAX 16
+typedef struct {
+  char id[33], requirement[257];
+  char command[16];              /* build | test | lint | diagnostics */
+  char path[257];                /* canonical relative directory, or "." */
+  char adapter[16];              /* auto | cmake | cargo | npm | python */
+  uint32_t depends_on;
+} asngn_work_criterion;
+typedef struct {
+  char goal[513], constraints[513];
+  size_t count;                 /* 1..ASNGN_WORK_CRITERIA_MAX */
+  asngn_work_criterion criteria[ASNGN_WORK_CRITERIA_MAX];
+} asngn_work_definition;
+typedef enum {
+  ASNGN_PROOF_NOT_RUN = 0, ASNGN_PROOF_PASSED, ASNGN_PROOF_FAILED,
+  ASNGN_PROOF_INCONCLUSIVE, ASNGN_PROOF_INFRASTRUCTURE_ERROR,
+  ASNGN_PROOF_STALE, ASNGN_PROOF_BLOCKED
+} asngn_proof_status;
+typedef struct {
+  asngn_proof_status status;
+  char action_id[37], snapshot[65], receipt_sha256[65];
+} asngn_work_proof;
+typedef struct {
+  uint64_t revision, sequence;
+  asngn_work_definition definition;
+  asngn_work_proof proofs[ASNGN_WORK_CRITERIA_MAX];
+  int succeeded;                /* all declared criteria passed on current files */
+} asngn_work_state;
+const char *asngn_proof_status_name(asngn_proof_status status);
+/* Optimistic definition update; expected_revision=0 creates the first contract.
+ * BUSY during an accepted turn or if the revision changed. No implicit success
+ * is inferred when no contract exists. Evidence covers the full workspace;
+ * toolchain/environment changes require explicit invalidation by the host. */
+asngn_err asngn_session_work_define(asngn_session *s, uint64_t expected_revision,
+                                    const asngn_work_definition *definition);
+asngn_err asngn_session_work_invalidate(asngn_session *s, uint64_t expected_revision);
+/* Fresh snapshot and dependency validation on every read. NOT_FOUND without a
+ * contract. *out is allocated; release with asngn_free. This is a point-in-time
+ * view of the declared checks, not a guarantee of complete test coverage. */
+asngn_err asngn_session_work_get(asngn_session *s, asngn_work_state **out);
+
+/* REASONING is a short, redacted rationale from a validated action. */
+typedef void (*asngn_stream_fn)(const asngn_stream_event *event, void *ud);
+
+typedef struct {
+  asngn_detail detail;      /* override; AUTO = controller decides         */
+  uint32_t     deadline_ms; /* 0 = configured default (unlimited by default) */
+  int          no_tools;    /* disable CALL for this turn                  */
+  int          no_cache;    /* bypass the semantic cache for this turn     */
+} asngn_submit_opts;
+
+typedef struct {
+  char    *answer;          /* UTF-8, asngn_free                           */
+  size_t   turn;
+  char     klass[12];       /* "simple" | "moderate" | "complex" | ...     */
+  char     detail[8];       /* "terse" | "normal" | "rich"                 */
+  char     tier[16];        /* generator tier actually used                */
+  char     cache[8];        /* "hit" | "adapt" | "miss" | "off"            */
+  int      capped;          /* answer hit its detail cap                   */
+  int      clarify;         /* answer is a CLARIFY question                */
+  size_t   tokens_prompt, tokens_gen, tokens_saved;
+  uint64_t duration_ms;
+} asngn_turn_result;
+
+/* Asynchronous; token_fn may be NULL (no streaming). Turns are serialized
+ * per session: ASNGN_ERR_BUSY while one is running. */
+asngn_err asngn_submit(asngn_session *s, const char *text_utf8,
+                       const asngn_submit_opts *opts,
+                       asngn_token_fn token_fn, void *ud,
+                       asngn_task **out);
+/* Rich variant: accepted output, redacted rationale, and policy notices. */
+asngn_err asngn_submit_stream(asngn_session *s, const char *text_utf8,
+                              const asngn_submit_opts *opts,
+                              asngn_stream_fn stream_fn, void *ud,
+                              asngn_task **out);
+/* ASNGN_ERR_BUSY: not done within timeout_ms. On completion fills *out
+ * exactly once; later calls return the stored outcome. */
+asngn_err asngn_task_wait  (asngn_task *t, uint32_t timeout_ms,
+                            asngn_turn_result *out);
+/* Immediately cancels the turn and its in-flight provider request. */
+asngn_err asngn_task_cancel(asngn_task *t);
+void      asngn_task_free  (asngn_task *t);
+
+/* ---- confirmations ---------------------------------------------- */
+
+typedef enum {
+  ASNGN_APPROVAL_PENDING = 0, ASNGN_APPROVAL_APPROVED, ASNGN_APPROVAL_DENIED,
+  ASNGN_APPROVAL_CONSUMED, ASNGN_APPROVAL_INVALIDATED, ASNGN_APPROVAL_INTERRUPTED
+} asngn_approval_status;
+typedef struct {
+  unsigned long long sequence;
+  char id[37], turn_id[37];
+  char tool_ref[128], command[64];
+  char arguments_sha256[65], package_sha256[65], snapshot[65];
+  char workspace[4096];
+  asngn_security_profile profile;
+  asngn_approval_status status;
+  int session_wide;
+  char *arguments; /* owned, complete redacted display; execution uses its bound hash */
+} asngn_approval;
+/* Latest durable approval for this session; NOT_FOUND before the first request.
+ * Reopening an interrupted process never replays the associated action. */
+asngn_err asngn_approval_get(asngn_session *s, asngn_approval **out);
+void asngn_approval_free(asngn_approval *approval);
+
+/* An event of kind "confirm" carries data.confirm_id; the agent worker
+ * blocks until asngn_confirm answers it (or the turn is cancelled).
+ * Decisions are durable before the worker wakes. Conflicting repeats fail.
+ * NO_THREADS: the confirm event callback must decide before returning;
+ * otherwise the turn ends with ERR_DENIED and the approval is interrupted.
+ * session_wide != 0 permits the same tool package/workspace/profile for this
+ * process's session lifetime; a changed package or profile needs a new decision. */
+asngn_err asngn_confirm(asngn_ctx *c, const char *confirm_id,
+                        int allow, int session_wide);
+
+/* ---- feedback and continuation ----------------------------------------- */
+
+/* signal: +1 good, -1 poor, 0 clears. Recorded into the ledger. */
+asngn_err asngn_feedback(asngn_session *s, size_t turn, int signal);
+/* Continue the last capped answer. */
+asngn_err asngn_more    (asngn_session *s, asngn_token_fn fn, void *ud,
+                         asngn_task **out);
+asngn_err asngn_more_stream(asngn_session *s, asngn_stream_fn fn, void *ud,
+                            asngn_task **out);
+
+/* ---- caches ------------------------------------------------------------ */
+
+/* scope: "session" | "global" | NULL (= both). */
+asngn_err asngn_cache_clear(asngn_ctx *c, const char *scope);
+
+/* ---- introspection (TUI panes, asngn-mcp) ------------------------------ */
+
+typedef struct {
+  size_t   turns;                 /* committed ledger entries            */
+  size_t   tokens_prompt, tokens_gen, tokens_saved;
+  size_t   tokens_memory;         /* memory-zone (⁂ asper) share of prompt */
+  size_t   cache_hits, cache_adapts, cache_misses;
+  size_t   clarifies, capped;
+  size_t   escalations;
+  double   qpt_rolling;           /* window of 20                        */
+  uint64_t world_epoch;
+  long long spent_tokens;         /* committed-turn projection, not consumption */
+} asngn_session_stats;
+asngn_err asngn_session_get_stats(asngn_session *s,
+                                  asngn_session_stats *out);
+
+/* Inference accounting for the entire engine store, including shared ⁂ asper
+ * calls. Unknown usage retains its reservation; charged_tokens is a budget
+ * charge, not an exact count of consumed tokens. Unsettled calls may be live
+ * or interrupted. A failed/uncertain journal returns IO and clears the output. */
+typedef struct {
+  int64_t calls, unsettled_calls, unknown_calls, failed_calls, cancelled_calls;
+  int64_t known_input_tokens, known_output_tokens;
+  int64_t unsettled_tokens, unknown_tokens, charged_tokens;
+} asngn_consumption_totals;
+typedef struct {
+  asngn_consumption_totals lifetime, today;
+  int64_t utc_day; /* greatest current or recorded reservation UTC day */
+} asngn_consumption;
+asngn_err asngn_get_consumption(asngn_ctx *c, asngn_consumption *out);
+
+typedef struct {
+  int       asper_ok, astools_ok;
+  size_t    mem_identity, mem_context, mem_project, mem_deprecated;
+  long long mem_last_cycle_at;    /* unix seconds UTC; 0 = never         */
+  char      project[65];          /* active ⁂ asper project or ""          */
+  size_t    tools_total, tools_enabled, tools_unavailable;
+  size_t    tool_invocations, tool_ok, tool_failed, tool_denied;
+} asngn_module_stats;
+asngn_err asngn_get_module_stats(asngn_ctx *c, asngn_module_stats *out);
+
+/* One resolved tool of the ⁂ astools registry. */
+typedef struct {
+  char ref[64];   /* tool id                                          */
+  int  enabled;   /* host toggle AND pinning gate                     */
+  int  available; /* runnable on this platform                        */
+} asngn_tool_info;
+/* Every resolved tool, sorted by id; *out is one allocation released
+ * with asngn_free. *out = NULL, *out_n = 0 when ⁂ astools is disabled. */
+asngn_err asngn_tool_list(asngn_ctx *c, asngn_tool_info **out,
+                          size_t *out_n);
+/* Enable or disable a tool ("fs" or "fs@1.2.0") for CALL steps. Under
+ * pinning "enforce" an enable only takes effect once the lockfile
+ * verifies; re-read the state with asngn_tool_list. */
+asngn_err asngn_tool_enable(asngn_ctx *c, const char *ref, int on);
+
+/* Direct ⁂ asper recall, bypassing the loop (/memory). Answer rendered
+ * with citations; asngn_free. */
+asngn_err asngn_recall(asngn_ctx *c, const char *question, char **out);
+
+/* Select the ⁂ asper project for this session; NULL deselects. The
+ * semantic cache is additionally partitioned by the project slug. */
+asngn_err asngn_session_project(asngn_session *s, const char *slug);
+asngn_err asngn_project_list(asngn_ctx *c, char ***out_slugs,
+                             size_t *out_n);
+
+/* Toggle the model-visible redaction scan for this session. */
+asngn_err asngn_session_redact(asngn_session *s, int on);
+
+/* Re-run the last turn one tier up, bypassing the cache. */
+asngn_err asngn_retry(asngn_session *s, asngn_token_fn fn, void *ud,
+                      asngn_task **out);
+asngn_err asngn_retry_stream(asngn_session *s, asngn_stream_fn fn, void *ud,
+                             asngn_task **out);
+
+/* Session report: writes report.xcdn + report.txt next to the
+ * session and returns the plain-text rendering (asngn_free). */
+asngn_err asngn_session_export(asngn_session *s, char **out_text);
+
+/* Most recent n telemetry events as xCDN lines, oldest first;
+ * asngn_strings_free. */
+asngn_err asngn_telemetry_tail(asngn_ctx *c, size_t n, char ***out,
+                               size_t *out_n);
+
+/* ---- stats / logging / lifecycle --------------------------------------- */
+
+/* The configured model pool: which weights file each pool id maps to,
+ * the engine roles it serves, and whether it is resident right now. */
+typedef struct {
+  char id[32];     /* pool id ("nano", "light", ...)                  */
+  char file[96];   /* basename of the resolved weights file           */
+  char roles[112]; /* space-joined roles served ("router judge ...")  */
+  int  resident;   /* loaded in memory at this moment                 */
+  int  embedding;  /* embedding model (never generates)               */
+} asngn_model_info;
+/* Fills up to cap entries; *out_n = configured pool size. */
+asngn_err asngn_get_models(asngn_ctx *c, asngn_model_info *out,
+                           size_t cap, size_t *out_n);
+
+typedef struct {
+  size_t turns, cache_hits, cache_adapts, cache_misses;
+  size_t tool_calls, tool_cache_hits, escalations, guard_trips;
+  size_t tokens_prompt, tokens_gen, tokens_saved;
+  double qpt_rolling;             /* rolling QpT over the last 20 turns   */
+  long long last_turn_at;         /* unix seconds UTC; 0 = never          */
+  long long last_sweep_at;
+} asngn_stats;
+asngn_err asngn_get_stats(asngn_ctx *c, asngn_stats *out);
+
+/* Callback sink, independent of the file log. level: ASNGN_LOG_*. The
+ * default callback writes WARN and ERROR to stderr. fn NULL disables. */
+typedef void (*asngn_log_fn)(int level, const char *msg, void *ud);
+void asngn_set_logger(asngn_ctx *c, asngn_log_fn fn, void *ud);
+
+/* ASTERISM_NO_THREADS builds: run due background work on the caller.
+ * Threaded builds: no-op returning ASNGN_OK. */
+asngn_err asngn_tick(asngn_ctx *c);
+
+/* ---- memory management -------------------------------------------------- */
+
+void asngn_turn_result_free(asngn_turn_result *r);
+void asngn_strings_free(char **s, size_t n);
+void asngn_free(void *p);          /* strings/arrays from the API          */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ASNGN_H */

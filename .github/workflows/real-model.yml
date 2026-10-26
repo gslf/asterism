@@ -1,0 +1,44 @@
+name: real-model
+
+# Weekly outcome-gated coding evaluation with real GGUF models on CPU.
+on:
+  schedule:
+    - cron: "17 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with: { submodules: recursive }
+      - name: Install protected verifier
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Cache verified models
+        uses: actions/cache@v4
+        with:
+          path: demo/models
+          key: gguf-${{ hashFiles('scripts/models.manifest.tsv') }}
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DASTERISM_BUILD_TESTS=OFF -DGGML_NATIVE=OFF
+          cmake --build build -j 4
+      - name: Fetch models and tools
+        run: scripts/fetch-models.sh demo --repair --install-tools
+      - name: Run quality suite
+        run: |
+          python3 asngn/tests/quality/run_quality.py --asngn build/bin/asngn --engine-root demo \
+            --profile reference-qwen2.5-q4-cpu \
+            --report build/quality-report.json --artifacts build/quality-artifacts
+      - name: Keep evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: |
+            build/quality-report.json
+            build/quality-artifacts

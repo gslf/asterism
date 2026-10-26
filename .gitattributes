@@ -1,0 +1,2 @@
+# LF everywhere: protocol fixtures and hashes must be identical on every OS.
+* text=auto eol=lf
