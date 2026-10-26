@@ -31,7 +31,7 @@ jobs:
         run: scripts/fetch-models.sh demo --repair --install-tools
       - name: Run quality suite
         run: |
-          python3 asngn/tests/quality/run_quality.py --asngn build/bin/asngn --engine-root demo \
+          python3 asngn/tests/quality/run_quality.py --asngn build/bin/asterism --engine-root demo \
             --profile reference-qwen2.5-q4-cpu \
             --report build/quality-report.json --artifacts build/quality-artifacts
       - name: Keep evidence

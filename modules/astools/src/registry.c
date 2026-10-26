@@ -634,7 +634,7 @@ astools_err astools_registry_resolve(astools_ctx *c, const char *ref,
       e = astools_seterr(c, ASTOOLS_ERR_DENIED,
                          "tool '%s@%s' is blocked by registry.pinning="
                          "\"enforce\" (%s); approve it with "
-                         "astools-check --approve %s@%s",
+                         "asterism tools approve %s@%s",
                          id, bv,
                          blocked_lock == ASTOOLS_LOCK_MISMATCH
                              ? "lockfile hash mismatch"

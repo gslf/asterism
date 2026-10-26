@@ -3,7 +3,7 @@
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=${HOME}/asngn
+ROOT=${HOME}/asterism
 ROOT_SET=0
 INSTALL_TOOLS=0
 REPAIR=0

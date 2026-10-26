@@ -12,7 +12,7 @@ def run(root, calls):
     messages += [dict(jsonrpc="2.0", id=i + 2, method="tools/call",
                      params={"name": "session_work", "arguments": args})
                  for i, args in enumerate(calls)]
-    result = subprocess.run([sys.argv[1], "--root", root],
+    result = subprocess.run([sys.argv[1], "mcp", "--root", root],
                             input="".join(json.dumps(m) + "\n" for m in messages),
                             text=True, capture_output=True, timeout=30, check=True)
     replies = [json.loads(line) for line in result.stdout.splitlines()]

@@ -1,4 +1,4 @@
-"""Exercise reviewed local MCP-server packages through astools-check --invoke."""
+"""Exercise reviewed local MCP-server packages through asterism tools invoke."""
 import argparse
 import copy
 import json
@@ -14,7 +14,7 @@ from package_mcp import assemble
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checker", required=True)
+    parser.add_argument("--cli", required=True)
     parser.add_argument("--server", required=True, type=Path)
     args = parser.parse_args()
     reviewed = {"id": "remote", "version": "1.0.0", "summary": "Reviewed local echo",
@@ -35,7 +35,7 @@ def main():
             contract.write_text(json.dumps(spec), encoding="utf-8")
             package = assemble(args.server, contract, work / "registry" / "remote")
             assert not (work / "called").exists(), "Assembly executed the server"
-            subprocess.run([args.checker, str(package)], check=True, capture_output=True, timeout=10)
+            subprocess.run([args.cli, "check", str(package)], check=True, capture_output=True, timeout=10)
             try:
                 assemble(args.server, contract, package)
             except FileExistsError:
@@ -48,9 +48,9 @@ def main():
                 "grants": {"tools": [{"tool": "remote", "env": ["MCP_TEST_ALLOWED"]}] if mode == "environment" else []},
                 "workspace": {"root": str(work)}, "sandbox": {"default_level": level, "strict_fallback": "reject"}}))
             host = ["--root", str(package.parent), "--config", str(config)]
-            catalog = subprocess.run([args.checker, "--catalog", *host], text=True, capture_output=True, timeout=30)
+            catalog = subprocess.run([args.cli, "catalog", *host], text=True, capture_output=True, timeout=30)
             assert catalog.returncode == 0 and "echo" in catalog.stdout, (catalog.stdout, catalog.stderr)
-            run = subprocess.run([args.checker, "--invoke", "remote.echo", '{msg: "tè 🍵"}', *host],
+            run = subprocess.run([args.cli, "invoke", "remote.echo", '{msg: "tè 🍵"}', *host],
                                  text=True, capture_output=True, timeout=30, env={**os.environ,
                                      "MCP_TEST_ALLOWED": "synthetic-test-credential",
                                      "MCP_TEST_DENIED": "must-not-reach-child"})

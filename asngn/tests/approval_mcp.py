@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix="asngn-approval-mcp-") as root:
     messages += [dict(jsonrpc="2.0", id=i+2, method="tools/call",
         params={"name": "session_approval", "arguments": args})
         for i, args in enumerate(({}, {"allow": True}, {}))]
-    proc = subprocess.run([sys.argv[1], "--root", root],
+    proc = subprocess.run([sys.argv[1], "mcp", "--root", root],
         input="".join(json.dumps(v)+"\n" for v in messages), capture_output=True,
         text=True, encoding="utf-8", timeout=30, check=True)
     replies = [json.loads(line) for line in proc.stdout.splitlines()]
@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix="asngn-approval-mcp-") as root:
 with tempfile.TemporaryDirectory(prefix="asngn-frame-mcp-") as root:
     oversized = '"' + "x" * (8 * 1024 * 1024) + '"\n'
     later = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
-    proc = subprocess.run([sys.argv[1], "--root", root], input=oversized + later,
+    proc = subprocess.run([sys.argv[1], "mcp", "--root", root], input=oversized + later,
         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     replies = [json.loads(line) for line in proc.stdout.splitlines()]
     assert len(replies) == 1 and replies[0]["error"]["code"] == -32600, replies

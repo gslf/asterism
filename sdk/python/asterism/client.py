@@ -24,7 +24,7 @@ class Client:
             try:
                 version = reply["capabilities"]["experimental"]["dev.asterism/asngn"]["contractVersion"]
                 valid = (reply["protocolVersion"] == "2025-06-18" and
-                         reply["serverInfo"]["name"] == "asngn-mcp" and
+                         reply["serverInfo"]["name"] == "asterism" and
                          isinstance(reply["serverInfo"]["version"], str) and type(version) is int and version == 1)
             except (KeyError, TypeError):
                 valid = False

@@ -1,5 +1,5 @@
 /*
- * term.c — terminal layer of the ⁂ asngn TUI.
+ * term.c — terminal layer of the asterism TUI.
  *
  * POSIX: raw mode via termios; output is VT escape sequences over a
  * damage-tracked double buffer diffed per frame. Resize via SIGWINCH
@@ -230,9 +230,9 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
   if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) ||
       (tm != NULL && strcmp(tm, "dumb") == 0)) {
     fprintf(stderr,
-            "asngn: the interactive TUI needs a terminal "
+            "asterism: the interactive TUI needs a terminal "
             "(TERM=dumb or output is not a tty).\n"
-            "       try: asngn --once \"your message\"\n");
+            "       try: asterism --once \"your message\"\n");
     return -1;
   }
 
@@ -242,7 +242,7 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
     t->colors = TUI_COLOR_256;
 
   if (pipe(fds) != 0) {
-    fprintf(stderr, "asngn: pipe: %s\n", strerror(errno));
+    fprintf(stderr, "asterism: pipe: %s\n", strerror(errno));
     return -1;
   }
   t->wake_r = fds[0];
@@ -253,7 +253,7 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
   (void)fcntl(t->wake_w, F_SETFD, FD_CLOEXEC);
 
   if (tcgetattr(STDIN_FILENO, &t->saved_tio) != 0) {
-    fprintf(stderr, "asngn: tcgetattr: %s\n", strerror(errno));
+    fprintf(stderr, "asterism: tcgetattr: %s\n", strerror(errno));
     return -1;
   }
   raw = t->saved_tio;
@@ -264,7 +264,7 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
   raw.c_cc[VMIN] = 0;
   raw.c_cc[VTIME] = 0;
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
-    fprintf(stderr, "asngn: tcsetattr: %s\n", strerror(errno));
+    fprintf(stderr, "asterism: tcsetattr: %s\n", strerror(errno));
     return -1;
   }
   t->raw_active = 1;
@@ -317,9 +317,9 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
   if (hin == INVALID_HANDLE_VALUE || hout == INVALID_HANDLE_VALUE ||
       !GetConsoleMode(hin, &im) || !GetConsoleMode(hout, &om)) {
     fprintf(stderr,
-            "asngn: the interactive TUI needs a terminal "
+            "asterism: the interactive TUI needs a terminal "
             "(output is not a console).\n"
-            "       try: asngn --once \"your message\"\n");
+            "       try: asterism --once \"your message\"\n");
     return -1;
   }
   t->h_in = hin;
@@ -335,7 +335,7 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
 
   t->wake_ev = CreateEventW(NULL, TRUE, FALSE, NULL); /* manual reset */
   if (t->wake_ev == NULL) {
-    fprintf(stderr, "asngn: CreateEvent failed (%lu)\n",
+    fprintf(stderr, "asterism: CreateEvent failed (%lu)\n",
             (unsigned long)GetLastError());
     return -1;
   }
@@ -345,8 +345,8 @@ int tui_term_open(tui_term *t, int truecolor_hint) {
                                 DISABLE_NEWLINE_AUTO_RETURN)) {
     /* pre-Win10 conhost: no VT processing, the UI cannot render */
     fprintf(stderr,
-            "asngn: this console has no VT support; use Windows 10+ "
-            "(Windows Terminal recommended), or: asngn --once \"...\"\n");
+            "asterism: this console has no VT support; use Windows 10+ "
+            "(Windows Terminal recommended), or: asterism --once \"...\"\n");
     CloseHandle((HANDLE)t->wake_ev);
     t->wake_ev = NULL;
     return -1;

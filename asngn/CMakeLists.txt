@@ -49,33 +49,29 @@ if(NOT WIN32)
 endif()
 
 if(ASTERISM_FRONTENDS)
-  # Terminal UI and headless one-shot CLI.
-  add_executable(asngn
+  # The modes of the one executable: terminal UI, MCP server, editor host.
+  set(ASNGN_FRONTEND_SOURCES
     tui/main.c tui/term.c tui/draw.c tui/theme.c tui/input.c tui/panes.c
-    tui/modal.c tui/confirmation.c tui/chat.c)
-  target_include_directories(asngn PRIVATE tui)
-  target_link_libraries(asngn PRIVATE asngn_lib)
-  asterism_strict(asngn)
+    tui/modal.c tui/confirmation.c tui/chat.c
+    mcp/main.c mcp/tasks.c mcp/work.c mcp/approval.c mcp/recovery.c
+    mcp/consumption.c)
+  if(ASTERISM_ACP)
+    list(APPEND ASNGN_FRONTEND_SOURCES
+      acp/main.c acp/io.c acp/protocol.c acp/dispatch.c acp/session.c
+      acp/stream.c acp/events.c acp/permission.c acp/run.c)
+  endif()
+  add_library(asngn_frontends STATIC ${ASNGN_FRONTEND_SOURCES})
+  target_include_directories(asngn_frontends PUBLIC . tui mcp acp)
+  target_link_libraries(asngn_frontends PUBLIC asngn_lib)
+  asterism_strict(asngn_frontends)
 
-  # The one MCP server of the project.
-  add_executable(asngn-mcp
-    mcp/main.c mcp/tasks.c mcp/work.c mcp/approval.c mcp/recovery.c mcp/consumption.c)
-  target_include_directories(asngn-mcp PRIVATE mcp)
-  target_link_libraries(asngn-mcp PRIVATE asngn_lib)
-  asterism_strict(asngn-mcp)
-endif()
-
-if(ASTERISM_ACP)
-  # Editor host (Agent Client Protocol); shares the task layer with MCP.
-  add_library(asngn_acp STATIC
-    acp/io.c acp/protocol.c acp/dispatch.c acp/session.c acp/stream.c
-    acp/events.c acp/permission.c acp/run.c mcp/tasks.c mcp/work.c)
-  target_include_directories(asngn_acp PUBLIC acp mcp)
-  target_link_libraries(asngn_acp PUBLIC asngn_lib)
-  asterism_strict(asngn_acp)
-  add_executable(asngn-acp acp/main.c)
-  target_link_libraries(asngn-acp PRIVATE asngn_acp)
-  asterism_strict(asngn-acp)
+  # asterism: the only executable. main.c picks the mode.
+  add_executable(asterism main.c)
+  target_link_libraries(asterism PRIVATE asngn_frontends)
+  if(ASTERISM_ACP)
+    target_compile_definitions(asterism PRIVATE ASTERISM_ACP)
+  endif()
+  asterism_strict(asterism)
 endif()
 
 if(ASTERISM_BUILD_TESTS)

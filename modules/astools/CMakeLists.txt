@@ -42,11 +42,11 @@ set(ASTOOLS_SOURCES
   src/mcp_invoke.c
   src/catalog.c src/selection.c src/discovery.c src/discovery_view.c
   src/command_schema.c src/gbnf.c src/callline.c src/jscm.c
-  src/api.c)
+  src/api.c src/cli.c)
 if(WIN32)
   list(APPEND ASTOOLS_SOURCES src/os_proc_win32.c src/sandbox_win32.c)
 else()
-  list(APPEND ASTOOLS_SOURCES src/os_proc_posix.c src/sandbox_posix.c)
+  list(APPEND ASTOOLS_SOURCES src/os_proc_posix.c src/sandbox_posix.c src/jail.c)
 endif()
 
 add_library(astools STATIC ${ASTOOLS_SOURCES})
@@ -55,12 +55,6 @@ target_link_libraries(astools PUBLIC asmodel_json core xcdn)
 asterism_strict(astools)
 if(NOT WIN32)
   target_link_libraries(astools PUBLIC ${CMAKE_DL_LIBS} m)
-endif()
-
-# ── astools-jail: sandbox helper (POSIX) ────────────────────────────────────
-if(NOT WIN32)
-  add_executable(astools-jail jail/main.c)
-  asterism_strict(astools-jail)
 endif()
 
 # ── astools-std: the standard tools, one busybox-style binary ───────────────
@@ -94,12 +88,6 @@ foreach(tool ${ASTOOLS_STD_TOOLS})
   list(APPEND ASTOOLS_PKG_STAMPS ${ASTOOLS_PKG_DIR}/${tool}/manifest.xcdn)
 endforeach()
 add_custom_target(astools_packages ALL DEPENDS ${ASTOOLS_PKG_STAMPS})
-
-# ── astools-check: manifest lint, catalog/grammar preview, lockfile approval ─
-add_executable(astools-check check/main.c)
-target_include_directories(astools-check PRIVATE src ${ASTERISM_XCDN_SRC})
-target_link_libraries(astools-check PRIVATE astools)
-asterism_strict(astools-check)
 
 if(ASTERISM_BUILD_FUZZERS)
   foreach(target astools asmodel_json xcdn)

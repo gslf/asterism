@@ -1,4 +1,4 @@
-"""Validate the generated contract and query a packaged clangd via astools-check --invoke."""
+"""Validate the generated contract and query a packaged clangd via asterism tools invoke."""
 import argparse
 import copy
 import hashlib
@@ -15,13 +15,13 @@ from package_clangd import assemble
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checker", required=True)
+    parser.add_argument("--cli", required=True)
     parser.add_argument("--clangd", required=True, type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="astools-lsp-package-") as directory:
         root = Path(directory)
         package = assemble(args.clangd, root / "registry" / "clangd")
-        subprocess.run([args.checker, str(package)], check=True, timeout=10)
+        subprocess.run([args.cli, "check", str(package)], check=True, timeout=10)
         original = (package / "bin" / "clangd").stat().st_size
         try:
             assemble(args.clangd, package)
@@ -43,7 +43,7 @@ def main():
             elif case == "cache": cmd["annotations"]["idempotent"] = True
             negative = root / "negative.xcdn"
             negative.write_text(render(bad), encoding="utf-8")
-            result = subprocess.run([args.checker, str(negative)], capture_output=True, timeout=10)
+            result = subprocess.run([args.cli, "check", str(negative)], capture_output=True, timeout=10)
             assert result.returncode == 2, (case, result.stdout, result.stderr)
         workspace = root / "workspace"
         workspace.mkdir()
@@ -57,13 +57,13 @@ def main():
             "sandbox": {"default_level": "basic", "strict_fallback": "reject"},
         }), encoding="utf-8")
         host = ["--root", str(package.parent), "--config", str(config)]
-        catalog = subprocess.run([args.checker, "--catalog", "--level", "index", *host], text=True,
+        catalog = subprocess.run([args.cli, "catalog", "--level", "index", *host], text=True,
                                  capture_output=True, timeout=30)
         assert catalog.returncode == 0, catalog.stderr
         for command in ("symbols", "definition", "references", "diagnostics"):
             assert command in catalog.stdout, catalog.stdout
         digest = hashlib.sha256(source.encode()).hexdigest()
-        run = subprocess.run([args.checker, "--invoke", "clangd.symbols",
+        run = subprocess.run([args.cli, "invoke", "clangd.symbols",
                               '{path: "example.cpp", sha256: "%s"}' % digest, *host],
                              text=True, capture_output=True, timeout=30)
         assert run.returncode == 0, (run.stdout, run.stderr)
@@ -71,7 +71,7 @@ def main():
         assert observation["items"][0]["name"].startswith("identity"), observation
         assert observation["source_sha256"] == digest
         assert "verification" not in observation
-        stale = subprocess.run([args.checker, "--invoke", "clangd.symbols",
+        stale = subprocess.run([args.cli, "invoke", "clangd.symbols",
                                 '{path: "example.cpp", sha256: "%s"}' % ("0" * 64), *host],
                                text=True, capture_output=True, timeout=30)
         assert stale.returncode == 2 and "reopen the file" in stale.stderr, (stale.stdout, stale.stderr)

@@ -110,7 +110,7 @@ def exercise(provider, direct):
             messages = [dict(jsonrpc="2.0", id=1, method="initialize", params={"protocolVersion": "2025-06-18",
                 "capabilities": {}, "clientInfo": {"name": "native-wire", "version": "1"}}),
                 dict(jsonrpc="2.0", id=2, method="tools/call", params={"name": "agent_ask", "arguments": {"message": "Inspect wire.run"}})]
-            proc = subprocess.run([sys.argv[1], "--root", str(root / "store"), "--config", str(config)],
+            proc = subprocess.run([sys.argv[1], "mcp", "--root", str(root / "store"), "--config", str(config)],
                 input="".join(json.dumps(v) + "\n" for v in messages), text=True, capture_output=True, timeout=30)
             assert not server.errors, server.errors
             assert proc.returncode == 0, proc.stderr

@@ -88,7 +88,7 @@ def fixture(binary, tool_binary=None):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            yield [binary, "--root", str(root / "store"), "--config", str(config)], server
+            yield [binary, "mcp", "--root", str(root / "store"), "--config", str(config)], server
         finally:
             server.shutdown()
             thread.join(timeout=5)

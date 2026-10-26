@@ -37,7 +37,7 @@ asngn_err asngn_diagnose(const asngn_open_params *params, char **out) {
     free(root); root = core_strdup(c->cfg.root);
     if (!root) { e = ASNGN_ERR_NOMEM; goto done; }
   }
-  e = asngn_buf_printf(&report, "asngn %s\nConfiguration: %s (%s)\nEngine root: %s\n",
+  e = asngn_buf_printf(&report, "asterism %s\nConfiguration: %s (%s)\nEngine root: %s\n",
                        asngn_version(), config, configured ? "loaded" : "missing; defaults", root);
   if (params->config_path && !configured) ready = false;
   for (size_t i = 0; e == ASNGN_OK && i < c->cfg.pool_n; i++) {

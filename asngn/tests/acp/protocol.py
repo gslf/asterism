@@ -11,7 +11,7 @@ def production(binary):
     with tempfile.TemporaryDirectory(prefix="asngn-acp-production-") as directory:
         workspace = Path(directory) / "workspace"
         workspace.mkdir()
-        with Peer([binary, "--root", str(Path(directory) / "state"),
+        with Peer([binary, "acp", "--root", str(Path(directory) / "state"),
                    "--workspace", str(workspace), "--allow-degraded"], workspace=workspace) as peer:
             peer.request(0, "session/new", cwd=str(workspace), mcpServers=[])
             assert peer.until(0)["error"]["code"] == -32000
@@ -23,7 +23,7 @@ def production(binary):
             peer.request(4, "session/close", sessionId=session)
             assert peer.until(4)["result"] == {}
             peer.close()
-    assert subprocess.run([binary], capture_output=True, timeout=5).returncode == 2
+    assert subprocess.run([binary, "acp"], capture_output=True, timeout=5).returncode == 2
 
 
 def admission(driver):

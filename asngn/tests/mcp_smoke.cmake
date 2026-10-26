@@ -1,5 +1,5 @@
-if(NOT DEFINED MCP_EXE OR NOT DEFINED MCP_ROOT_FLAG)
-  message(FATAL_ERROR "MCP_EXE and MCP_ROOT_FLAG are required")
+if(NOT DEFINED ASTERISM)
+  message(FATAL_ERROR "ASTERISM (the executable) is required")
 endif()
 set(root "${CMAKE_CURRENT_BINARY_DIR}/mcp-smoke-root")
 set(input "${CMAKE_CURRENT_BINARY_DIR}/mcp-smoke-input.jsonl")
@@ -11,7 +11,7 @@ file(WRITE "${input}"
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n"
   "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}\n")
 execute_process(
-  COMMAND "${MCP_EXE}" "${MCP_ROOT_FLAG}" "${root}"
+  COMMAND "${ASTERISM}" mcp --root "${root}"
   INPUT_FILE "${input}"
   OUTPUT_VARIABLE output
   ERROR_VARIABLE errors

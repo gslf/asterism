@@ -1,7 +1,7 @@
 /*
  * introspect.c — the introspection surface of the public API: session
  * and module statistics, direct recall, projects, redaction toggle,
- * session export, telemetry tail. The TUI panes and asngn-mcp
+ * session export, telemetry tail. The TUI panes and the MCP mode
  * are built on these.
  *
  * MIT License — per aspera ad astra.
@@ -301,7 +301,7 @@ asngn_err asngn_session_export(asngn_session *s, char **out_text) {
   core_buf_init(&xc);
 
   e = asngn_buf_printf(&txt,
-      "asngn session report \xE2\x9C\xA6 %s\n"
+      "asterism session report \xE2\x9C\xA6 %s\n"
       "======================================================\n"
       "turns ............ %zu\n"
       "tokens prompt .... %zu\n"

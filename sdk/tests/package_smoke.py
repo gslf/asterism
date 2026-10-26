@@ -52,7 +52,7 @@ async def main():
             assert error.code == "ASNGN_ERR_NOT_FOUND"
 asyncio.run(main())
 ''', encoding="utf-8")
-    run([sys.executable, "-I", python, engine, "--root", root / "python-store"], consumer)
+    run([sys.executable, "-I", python, engine, "mcp", "--root", root / "python-store"], consumer)
     # Invoke npm through its JS entry point on Windows too; never enable a shell.
     npm_command = shutil.which("npm")
     if not npm_command:
@@ -77,7 +77,7 @@ try {
 }
 finally { await client.close(); }
 ''', encoding="utf-8")
-    run([node, javascript, engine, "--root", root / "javascript-store"], consumer)
+    run([node, javascript, engine, "mcp", "--root", root / "javascript-store"], consumer)
     types = consumer / "consumer.mts"
     types.write_text((sdk / "tests/types.mts").read_text().replace("../javascript/src/index.mjs", "@asterism/sdk"), encoding="utf-8")
     run([node, tsc, "--noEmit", "--strict", "--module", "nodenext", "--target", "es2022",

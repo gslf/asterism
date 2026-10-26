@@ -1,5 +1,5 @@
 /*
- * main.c — asngn-mcp: MCP stdio server over libasngn.
+ * main.c — "asterism mcp": the MCP stdio server over libasngn.
  *
  * JSON-RPC 2.0, newline-delimited compact JSON on stdin/stdout, protocol
  * revision 2025-06-18.
@@ -44,28 +44,26 @@
 #include "approval.h"
 #include "recovery.h"
 #include "consumption.h"
+#include "modes.h"
 
 /* ═══════════════════════ usage / help ═══════════════════════ */
 
 static const char USAGE[] =
-    "usage: asngn-mcp [--root <dir>] [--config <file>] "
-    "[--workspace <dir>] [--allow-degraded]\n"
-    "       asngn-mcp --help | --version\n";
+    "usage: asterism mcp [--root <dir>] [--config <file>] "
+    "[--workspace <dir>] [--allow-degraded]\n";
 
 static const char HELP[] =
-    "asngn-mcp - MCP stdio server for asngn\n"
+    "asterism mcp - MCP server on stdio\n"
     "\n"
-    "usage: asngn-mcp [--root <dir>] [--config <file>] "
+    "usage: asterism mcp [--root <dir>] [--config <file>] "
     "[--workspace <dir>] [--allow-degraded]\n"
-    "       asngn-mcp --help | --version\n"
     "\n"
     "options:\n"
-    "  --root <dir>     override engine root (default: ~/asngn)\n"
+    "  --root <dir>     override engine root (default: ~/asterism)\n"
     "  --config <file>  optional xCDN configuration file (#asngn_config)\n"
     "  --workspace <dir> canonical coding workspace (overrides config)\n"
     "  --allow-degraded  explicitly allow missing coding dependencies\n"
     "  --help           print this help and exit\n"
-    "  --version        print the version and exit\n"
     "\n"
     "The server speaks JSON-RPC 2.0 over stdio (MCP protocol revision\n"
     "2025-06-18), one compact JSON message per line. Tool confirmations\n"
@@ -123,8 +121,8 @@ static int decorate_modern_result(asmodel_json_value *result) {
   meta = asmodel_json_object();
   info = asmodel_json_object();
   ok = meta != NULL && info != NULL;
-  ok &= asmodel_json_object_set(info, "name", asmodel_json_string("asngn-mcp")) == 0;
-  ok &= asmodel_json_object_set(info, "title", asmodel_json_string("asngn")) == 0;
+  ok &= asmodel_json_object_set(info, "name", asmodel_json_string("asterism")) == 0;
+  ok &= asmodel_json_object_set(info, "title", asmodel_json_string("asterism")) == 0;
   ok &= asmodel_json_object_set(info, "version", asmodel_json_string(asngn_version())) == 0;
   ok &= asmodel_json_object_set(meta, "io.modelcontextprotocol/serverInfo", info) == 0;
   ok &= asmodel_json_object_set(result, "resultType", asmodel_json_string("complete")) == 0;
@@ -1086,8 +1084,8 @@ static asmodel_json_value *initialize_result(void) {
   ok &= asmodel_json_object_set(caps, "experimental", experimental) == 0;
   ok &= asmodel_json_object_set(res, "capabilities", caps) == 0;
   si = asmodel_json_object();
-  ok &= asmodel_json_object_set(si, "name", asmodel_json_string("asngn-mcp")) == 0;
-  ok &= asmodel_json_object_set(si, "title", asmodel_json_string("asngn")) == 0;
+  ok &= asmodel_json_object_set(si, "name", asmodel_json_string("asterism")) == 0;
+  ok &= asmodel_json_object_set(si, "title", asmodel_json_string("asterism")) == 0;
   ok &= asmodel_json_object_set(si, "version", asmodel_json_string(asngn_version())) == 0;
   ok &= asmodel_json_object_set(res, "serverInfo", si) == 0;
   if (!ok) {
@@ -1355,7 +1353,8 @@ static int line_blank(const char *s, size_t n) {
 
 /* ═══════════════════════ main ═══════════════════════ */
 
-int main(int argc, char **argv) {
+/* argv[0] is the mode name ("mcp"). */
+int asngn_mcp_main(int argc, char **argv) {
   const char *root = NULL, *config = NULL, *workspace = NULL;
   int allow_degraded = 0;
   asngn_open_params params;
@@ -1369,13 +1368,9 @@ int main(int argc, char **argv) {
       fputs(HELP, stdout);
       return 0;
     }
-    if (strcmp(a, "--version") == 0) {
-      printf("asngn-mcp %s\n", asngn_version());
-      return 0;
-    }
     if (strcmp(a, "--root") == 0) {
       if (++i >= argc) {
-        fprintf(stderr, "asngn-mcp: --root requires a value\n%s", USAGE);
+        fprintf(stderr, "asterism mcp: --root requires a value\n%s", USAGE);
         return 2;
       }
       root = argv[i];
@@ -1383,7 +1378,7 @@ int main(int argc, char **argv) {
       root = a + 7;
     } else if (strcmp(a, "--config") == 0) {
       if (++i >= argc) {
-        fprintf(stderr, "asngn-mcp: --config requires a value\n%s", USAGE);
+        fprintf(stderr, "asterism mcp: --config requires a value\n%s", USAGE);
         return 2;
       }
       config = argv[i];
@@ -1391,7 +1386,7 @@ int main(int argc, char **argv) {
       config = a + 9;
     } else if (strcmp(a, "--workspace") == 0) {
       if (++i >= argc) {
-        fprintf(stderr, "asngn-mcp: --workspace requires a value\n%s", USAGE);
+        fprintf(stderr, "asterism mcp: --workspace requires a value\n%s", USAGE);
         return 2;
       }
       workspace = argv[i];
@@ -1400,7 +1395,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(a, "--allow-degraded") == 0) {
       allow_degraded = 1;
     } else {
-      fprintf(stderr, "asngn-mcp: unknown argument \"%s\"\n%s", a, USAGE);
+      fprintf(stderr, "asterism mcp: unknown argument \"%s\"\n%s", a, USAGE);
       return 2;
     }
   }
@@ -1412,7 +1407,7 @@ int main(int argc, char **argv) {
   params.allow_degraded = allow_degraded;
   e = asngn_open(&params, &st.ctx);
   if (e != ASNGN_OK || !st.ctx) {
-    fprintf(stderr, "asngn-mcp: cannot open engine%s%s%s: %s\n",
+    fprintf(stderr, "asterism mcp: cannot open engine%s%s%s: %s\n",
             root != NULL ? " at \"" : "",
             root != NULL ? root : "",
             root != NULL ? "\"" : "", asngn_err_name(e));

@@ -4,7 +4,7 @@ const definition: Definition = { goal: 'Fix', constraints: 'Keep tests', criteri
   id: 'build', requirement: 'Build succeeds', command: 'build', path: '.', adapter: 'cmake', depends_on: 0,
 }] };
 export async function useClient(): Promise<Poll> {
-  const client = await Client.start(['asngn-mcp']);
+  const client = await Client.start(['asterism', 'mcp']);
   try {
     const charged: bigint = (await client.consumption()).lifetime.charged_tokens;
     void charged;

@@ -241,7 +241,7 @@ void astools_manifest_free(astools_manifest *m);
 const astools_cmd *astools_manifest_cmd(const astools_manifest *m,
                                         const char *name);
 
-/* Lint (astools-check): appends one "warn: ..." / "error: ..." line per
+/* Lint ("asterism tools check"): appends one "warn: ..." / "error: ..." line per
  * finding; returns the number of error-level findings. */
 int astools_manifest_lint(const astools_manifest *m, core_buf *out);
 

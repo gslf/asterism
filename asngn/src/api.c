@@ -1,7 +1,7 @@
 /*
  * api.c — the public C API of libasngn and context lifecycle.
  *
- * The TUI and asngn-mcp are pure clients of this surface. All strings
+ * The TUI and the MCP mode are pure clients of this surface. All strings
  * are UTF-8; every out-allocation is released with the matching
  * asngn_free*; asngn_open/asngn_close are not thread-safe with respect
  * to the same context, everything else is.
@@ -191,7 +191,7 @@ char *asngn_default_engine_root(void) {
   const char *home = getenv("USERPROFILE");
   if (home == NULL || home[0] == '\0') home = getenv("HOME");
   if (home == NULL || home[0] == '\0') return core_strdup(".");
-  return os_path_join(home, "asngn");
+  return os_path_join(home, "asterism");
 }
 
 asngn_err asngn_open_with(const asngn_open_params *p,
@@ -341,7 +341,7 @@ asngn_err asngn_open_with(const asngn_open_params *p,
     asngn_background_kick(c);
   }
 
-  asngn_log(c, ASNGN_LOG_INFO, "session", "asngn %s open at %s",
+  asngn_log(c, ASNGN_LOG_INFO, "session", "engine %s open at %s",
             asngn_version(), c->root);
   free(default_root);
   *out = c;

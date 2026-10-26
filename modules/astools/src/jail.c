@@ -1,14 +1,13 @@
 /*
- * astools-jail — standalone Seatbelt confinement helper.
- *
- * Usage: astools-jail -- <tool argv...>
+ * jail.c — confinement helper, run as "asterism jail -- <tool argv...>".
  *
  * The parent (libastools) generates an SBPL profile and passes it in the
  * environment variable ASTOOLS_JAIL_PROFILE; this helper applies it with
  * sandbox_init(3) (deprecated since 10.8 but functional), scrubs the
  * variable, and execs the tool with the sandbox already in force. The tool
  * argv[0] is resolved by the parent to an absolute path (no PATH search
- * here). Standalone on purpose: plain C99 + unistd, no libastools.
+ * here). Self-contained on purpose: plain C99 + unistd, no other astools
+ * code runs before the exec.
  *
  * Exit codes (chosen above the usual tool range so the runtime can tell
  * jail failures from tool exits):
@@ -195,7 +194,7 @@ static int apply_network_filter(void) {
 
 #endif
 
-int main(int argc, char **argv) {
+int astools_jail_main(int argc, char **argv) {
   int i, sep = -1;
   char **rest;
   const char *profile;
@@ -207,7 +206,7 @@ int main(int argc, char **argv) {
     }
   }
   if (sep < 0 || sep + 1 >= argc) {
-    fprintf(stderr, "usage: astools-jail -- <tool argv...>\n");
+    fprintf(stderr, "usage: asterism jail -- <tool argv...>\n");
     return 2;
   }
   rest = &argv[sep + 1];
@@ -219,7 +218,7 @@ int main(int argc, char **argv) {
     /* Being exec'd at all means confinement was requested; running the
      * tool without a profile would silently drop the sandbox. */
     fprintf(stderr,
-            "astools-jail: ASTOOLS_JAIL_PROFILE is not set; refusing to "
+            "asterism jail: ASTOOLS_JAIL_PROFILE is not set; refusing to "
             "run unconfined\n");
     _exit(124);
   }
@@ -230,7 +229,7 @@ int main(int argc, char **argv) {
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
     if (sandbox_init(profile, 0, &errbuf) != 0) {
-      fprintf(stderr, "astools-jail: sandbox_init failed: %s\n",
+      fprintf(stderr, "asterism jail: sandbox_init failed: %s\n",
               errbuf != NULL ? errbuf : "unknown error");
       if (errbuf != NULL) sandbox_free_error(errbuf);
       _exit(125);
@@ -243,11 +242,11 @@ int main(int argc, char **argv) {
   (void)profile;
 #if defined(__linux__)
   if (apply_landlock() != 0) {
-    perror("astools-jail: Landlock setup");
+    perror("asterism jail: Landlock setup");
     _exit(125);
   }
   if (getenv("ASTOOLS_JAIL_NET") == NULL && apply_network_filter() != 0) {
-    perror("astools-jail: seccomp setup");
+    perror("asterism jail: seccomp setup");
     _exit(125);
   }
 #endif
@@ -259,6 +258,6 @@ int main(int argc, char **argv) {
   unsetenv("ASTOOLS_JAIL_NET");
 #endif
   execv(rest[0], rest);
-  perror("astools-jail: execv");
+  perror("asterism jail: execv");
   _exit(127);
 }

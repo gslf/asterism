@@ -1,9 +1,9 @@
 /*
- * main.c — astools-check CLI for tool authors: manifest schema + lint,
- * catalog and grammar rendering, lockfile approval, one-off invocation.
+ * cli.c — "asterism tools": manifest schema + lint, catalog and grammar
+ * rendering, lockfile approval and one-off invocation, for tool authors.
  *
- * Exit codes: manifest mode returns the number of lint errors (2 on read/
- * parse failure); the registry modes return 0/1; usage errors return 2.
+ * Exit codes: check returns the number of lint errors (2 on read/parse
+ * failure); the registry commands return 0/1; usage errors return 2.
  * Counts are clamped to 255 so they survive the exit-status truncation.
  */
 
@@ -17,17 +17,16 @@
 
 static void chk_usage(FILE *to) {
   fputs(
-      "usage: astools-check <manifest-or-package-dir>\n"
-      "       astools-check --catalog --root <dir> [--workspace <w>]\n"
-      "                     [--config <file>]\n"
-      "                     [--level index|summary|full] [--budget N]\n"
-      "       astools-check --grammar --root <dir> [--workspace <w>]\n"
-      "                     [--config <file>]\n"
-      "       astools-check --approve <ref> --root <dir> [--config <file>]\n"
-      "                     [--workspace <w>]\n"
-      "       astools-check --invoke <tool>.<command> <args-xcdn> --root <dir>\n"
-      "                     [--workspace <w>] [--config <file>]\n"
-      "       astools-check --help | --version\n",
+      "usage: asterism tools check <manifest-or-package-dir>\n"
+      "       asterism tools catalog --root <dir> [--workspace <w>]\n"
+      "                      [--config <file>]\n"
+      "                      [--level index|summary|full] [--budget N]\n"
+      "       asterism tools grammar --root <dir> [--workspace <w>]\n"
+      "                      [--config <file>]\n"
+      "       asterism tools approve <ref> --root <dir> [--config <file>]\n"
+      "                      [--workspace <w>]\n"
+      "       asterism tools invoke <tool>.<command> <args-xcdn> --root <dir>\n"
+      "                      [--workspace <w>] [--config <file>]\n",
       to);
 }
 
@@ -236,7 +235,7 @@ static int cmd_approve(int argc, char **argv) {
   astools_err e;
 
   if (argc < 1 || argv[0][0] == '-') {
-    fprintf(stderr, "error: --approve needs a tool ref\n");
+    fprintf(stderr, "error: approve needs a tool ref\n");
     return 2;
   }
   ref = argv[0];
@@ -268,12 +267,12 @@ static int cmd_invoke(int argc, char **argv) {
   int rc;
 
   if (argc < 2 || argv[0][0] == '-' || argv[1][0] == '-') {
-    fprintf(stderr, "error: --invoke needs <tool>.<command> and <args-xcdn>\n");
+    fprintf(stderr, "error: invoke needs <tool>.<command> and <args-xcdn>\n");
     return 2;
   }
   dot = strchr(argv[0], '.');
   if (!dot || dot == argv[0] || dot[1] == '\0') {
-    fprintf(stderr, "error: --invoke target must be <tool>.<command>\n");
+    fprintf(stderr, "error: invoke target must be <tool>.<command>\n");
     return 2;
   }
   if (chk_parse_opts(argc - 2, argv + 2, &o, 0, 1) != 0) return 2;
@@ -306,29 +305,30 @@ static int cmd_invoke(int argc, char **argv) {
 
 /* ---- entry --------------------------------------------------------------- */
 
-int main(int argc, char **argv) {
-  const char *a1;
+/* argv[0] is the mode name ("tools"); argv[1] the command. */
+int astools_cli_main(int argc, char **argv) {
+  const char *cmd;
   if (argc < 2) {
     chk_usage(stderr);
     return 2;
   }
-  a1 = argv[1];
-  if (strcmp(a1, "--help") == 0 || strcmp(a1, "-h") == 0) {
+  cmd = argv[1];
+  if (strcmp(cmd, "--help") == 0 || strcmp(cmd, "help") == 0) {
     chk_usage(stdout);
     return 0;
   }
-  if (strcmp(a1, "--version") == 0) {
-    printf("astools-check %s\n", ASTERISM_VERSION);
-    return 0;
+  if (strcmp(cmd, "check") == 0) {
+    if (argc != 3 || argv[2][0] == '-') {
+      chk_usage(stderr);
+      return 2;
+    }
+    return cmd_manifest(argv[2]);
   }
-  if (strcmp(a1, "--catalog") == 0) return cmd_catalog(argc - 2, argv + 2);
-  if (strcmp(a1, "--grammar") == 0) return cmd_grammar(argc - 2, argv + 2);
-  if (strcmp(a1, "--approve") == 0) return cmd_approve(argc - 2, argv + 2);
-  if (strcmp(a1, "--invoke") == 0) return cmd_invoke(argc - 2, argv + 2);
-  if (a1[0] == '-') {
-    fprintf(stderr, "error: unknown option '%s'\n", a1);
-    chk_usage(stderr);
-    return 2;
-  }
-  return cmd_manifest(a1);
+  if (strcmp(cmd, "catalog") == 0) return cmd_catalog(argc - 2, argv + 2);
+  if (strcmp(cmd, "grammar") == 0) return cmd_grammar(argc - 2, argv + 2);
+  if (strcmp(cmd, "approve") == 0) return cmd_approve(argc - 2, argv + 2);
+  if (strcmp(cmd, "invoke") == 0) return cmd_invoke(argc - 2, argv + 2);
+  fprintf(stderr, "error: unknown command '%s'\n", cmd);
+  chk_usage(stderr);
+  return 2;
 }

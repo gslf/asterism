@@ -1,4 +1,4 @@
-# SDK checks against the real asngn-mcp. Configuring never downloads packages.
+# SDK checks against the real "asterism mcp". Configuring never downloads packages.
 # CTest names are sdk.<name>.
 
 function(sdk_test name timeout)
@@ -18,7 +18,7 @@ endif()
 
 set(PY ${Python3_EXECUTABLE} -B)
 set(DIR ${CMAKE_CURRENT_SOURCE_DIR})
-set(MCP $<TARGET_FILE:asngn-mcp>)
+set(MCP $<TARGET_FILE:asterism>)
 set(TOOL $<TARGET_FILE:asngn_fake_tool>)
 get_target_property(model_links asmodel INTERFACE_LINK_LIBRARIES)
 set(HTTP OFF)

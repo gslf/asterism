@@ -1,4 +1,4 @@
-"""Transport faults use a hostile peer; lifecycle integration uses asngn-mcp."""
+"""Transport faults use a hostile peer; lifecycle integration uses "asterism mcp"."""
 import asyncio
 import errno
 import json

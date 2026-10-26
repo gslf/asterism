@@ -1,5 +1,5 @@
 /*
- * main.c — the ⁂ asngn terminal application: argument parsing, the
+ * main.c — the terminal mode of asterism: argument parsing, the
  * event loop, slash commands, and the headless --once mode.
  *
  * Threading contract: ⁂ asngn callbacks (tokens, events, log) fire
@@ -35,6 +35,7 @@
 #endif
 
 #include "asngn_internal.h" /* see the exception note above */
+#include "modes.h"
 
 /* ── small utilities ──────────────────────────────────────────────────── */
 
@@ -142,7 +143,7 @@ static void render_header(tui_app *a, tui_frame *f) {
   d_cell(f, f->w - 1, 0, th->tr, TFG_DIM, TBG_DEFAULT, 0);
   x = 1;
   x += d_put(f, x, 0, " ", TFG_DIM, TBG_DEFAULT, 0);
-  x += d_put(f, x, 0, "asngn", TFG_ACCENT, TBG_DEFAULT, TA_BOLD);
+  x += d_put(f, x, 0, "asterism", TFG_ACCENT, TBG_DEFAULT, TA_BOLD);
   x += d_put(f, x, 0, " ", TFG_DIM, TBG_DEFAULT, 0);
   x += d_put(f, x, 0, th->star, TFG_ACCENT, TBG_DEFAULT, 0);
   x += d_put(f, x, 0, " ", TFG_DIM, TBG_DEFAULT, 0);
@@ -225,7 +226,7 @@ void tui_render_frame(tui_app *a, tui_frame *f, int *cx, int *cy) {
 
   d_clear(f);
   if (f->w < 24 || f->h < 7) {
-    d_put(f, 0, 0, "asngn: window too small", TFG_DIM, TBG_DEFAULT, 0);
+    d_put(f, 0, 0, "asterism: window too small", TFG_DIM, TBG_DEFAULT, 0);
     return;
   }
 
@@ -1325,7 +1326,7 @@ static void drain_queue(tui_app *a) {
 
 static void welcome(tui_app *a) {
   chat_systemf(&a->chat,
-               "asngn %s %s per aspera ad astra %s /help for commands",
+               "asterism %s %s per aspera ad astra %s /help for commands",
                asngn_version(), a->theme.star,
                a->theme.ascii ? "-" : "\xE2\x80\x94");
 }
@@ -1446,7 +1447,7 @@ static int run_once(const char *root, const char *config,
   if (strcmp(message, "-") == 0) {
     stdin_msg = read_stdin_all();
     if (stdin_msg == NULL || stdin_msg[0] == '\0') {
-      fprintf(stderr, "asngn: empty message on stdin\n");
+      fprintf(stderr, "asterism: empty message on stdin\n");
       free(stdin_msg);
       return 1;
     }
@@ -1460,7 +1461,7 @@ static int run_once(const char *root, const char *config,
   p.allow_degraded = allow_degraded;
   e = asngn_open(&p, &c);
   if (e != ASNGN_OK) {
-    fprintf(stderr, "asngn: open failed: %s\n", asngn_err_name(e));
+    fprintf(stderr, "asterism: open failed: %s\n", asngn_err_name(e));
     free(stdin_msg);
     return 1;
   }
@@ -1473,7 +1474,7 @@ static int run_once(const char *root, const char *config,
 
   e = asngn_session_open(c, session != NULL ? session : "main", &s);
   if (e != ASNGN_OK) {
-    fprintf(stderr, "asngn: %s: %s\n", asngn_err_name(e),
+    fprintf(stderr, "asterism: %s: %s\n", asngn_err_name(e),
             asngn_last_error(c));
     asngn_close(c);
     free(stdin_msg);
@@ -1497,7 +1498,7 @@ static int run_once(const char *root, const char *config,
     fflush(stdout);
     asngn_turn_result_free(&r);
   } else {
-    fprintf(stderr, "asngn: %s: %s\n", asngn_err_name(e),
+    fprintf(stderr, "asterism: %s: %s\n", asngn_err_name(e),
             asngn_last_error(c));
   }
   asngn_task_free(t);
@@ -1524,9 +1525,9 @@ static int run_interactive(const char *root, const char *config,
     if (!asngn_tty_in() || !asngn_tty_out() ||
         (tm != NULL && strcmp(tm, "dumb") == 0)) {
       fprintf(stderr,
-              "asngn: the interactive TUI needs a terminal "
+              "asterism: the interactive TUI needs a terminal "
               "(TERM=dumb or output is not a tty).\n"
-              "       try: asngn --once \"your message\"\n");
+              "       try: asterism --once \"your message\"\n");
       return 1;
     }
   }
@@ -1546,7 +1547,7 @@ static int run_interactive(const char *root, const char *config,
   p.allow_degraded = allow_degraded;
   e = asngn_open(&p, &a.ctx);
   if (e != ASNGN_OK) {
-    fprintf(stderr, "asngn: open failed: %s\n", asngn_err_name(e));
+    fprintf(stderr, "asterism: open failed: %s\n", asngn_err_name(e));
     return 1;
   }
 
@@ -1572,7 +1573,7 @@ static int run_interactive(const char *root, const char *config,
   e = asngn_session_open(a.ctx, session != NULL ? session : "main",
                          &a.ses);
   if (e != ASNGN_OK) {
-    fprintf(stderr, "asngn: %s: %s\n", asngn_err_name(e),
+    fprintf(stderr, "asterism: %s: %s\n", asngn_err_name(e),
             asngn_last_error(a.ctx));
     asngn_close(a.ctx);
     return 1;
@@ -1694,20 +1695,18 @@ static int run_interactive(const char *root, const char *config,
 
 /* ── argument parsing ─────────────────────────────────────────────────── */
 
-static void usage(FILE *out) {
+void asngn_tui_usage(FILE *out) {
   fprintf(out,
-          "asngn — workflow and automation harness\n"
-          "usage: asngn [--root <dir>] [--config <file>] "
+          "usage: asterism [--root <dir>] [--config <file>] "
           "[--workspace <dir>] [--allow-degraded] "
           "[--session <slug>]\n"
-          "             [--detail terse|normal|rich|auto] "
+          "                [--detail terse|normal|rich|auto] "
           "[--confirm prompt|deny|allow]\n"
-          "             [--once \"<message>\"] [--version] [--help]\n"
+          "                [--once \"<message>\"]\n"
           "\n"
-          "  --doctor           inspect configuration and model files without inference\n"
           "  --once <message>   run one turn headless and print the "
           "answer (\"-\" reads stdin)\n"
-          "  --root <dir>       override engine root (default: ~/asngn)\n"
+          "  --root <dir>       override engine root (default: ~/asterism)\n"
           "  --workspace <dir>  use an external workspace instead of the "
           "session workspace\n"
           "  --detail <level>   force the answer detail level\n"
@@ -1728,7 +1727,8 @@ static const char *arg_value(int argc, char **argv, int *i,
   return NULL;
 }
 
-int main(int argc, char **argv) {
+/* The default mode: interactive TUI, or one headless turn with --once. */
+int asngn_tui_main(int argc, char **argv) {
   const char *root = NULL;
   const char *config = NULL;
   const char *workspace = NULL;
@@ -1737,7 +1737,6 @@ int main(int argc, char **argv) {
   asngn_detail detail = ASNGN_DETAIL_AUTO;
   int confirm_override = -1;
   int frame_dump = 0;
-  int doctor = 0;
   int allow_degraded = 0;
   int i;
 
@@ -1757,7 +1756,7 @@ int main(int argc, char **argv) {
       else if (strcmp(v, "rich") == 0) detail = ASNGN_DETAIL_RICH;
       else if (strcmp(v, "auto") == 0) detail = ASNGN_DETAIL_AUTO;
       else {
-        fprintf(stderr, "asngn: unknown detail: %s\n", v);
+        fprintf(stderr, "asterism: unknown detail: %s\n", v);
         return 2;
       }
     } else if ((v = arg_value(argc, argv, &i, "--confirm")) != NULL) {
@@ -1768,42 +1767,27 @@ int main(int argc, char **argv) {
       else if (strcmp(v, "allow") == 0)
         confirm_override = (int)ASNGN_CONFIRM_ALLOW;
       else {
-        fprintf(stderr, "asngn: unknown confirm mode: %s\n", v);
+        fprintf(stderr, "asterism: unknown confirm mode: %s\n", v);
         return 2;
       }
     } else if ((v = arg_value(argc, argv, &i, "--once")) != NULL) {
       once = v;
     } else if (strcmp(argv[i], "--allow-degraded") == 0) {
       allow_degraded = 1;
-    } else if (strcmp(argv[i], "--doctor") == 0) {
-      doctor = 1;
     } else if (strcmp(argv[i], "--frame-dump") == 0) {
       frame_dump = 1; /* hidden: golden-frame hook */
     } else if (strcmp(argv[i], "--frame-dump-confirm") == 0) {
       frame_dump = 2;
-    } else if (strcmp(argv[i], "--version") == 0) {
-      printf("asngn %s\n", asngn_version());
-      return 0;
     } else if (strcmp(argv[i], "--help") == 0) {
-      usage(stdout);
+      asngn_tui_usage(stdout);
       return 0;
     } else {
-      fprintf(stderr, "asngn: unknown argument: %s\n", argv[i]);
-      usage(stderr);
+      fprintf(stderr, "asterism: unknown argument: %s\n", argv[i]);
+      asngn_tui_usage(stderr);
       return 2;
     }
   }
 
-  if (doctor) {
-    asngn_open_params params;
-    char *report = NULL;
-    memset(&params, 0, sizeof params);
-    params.engine_root = root; params.config_path = config;
-    asngn_err e = asngn_diagnose(&params, &report);
-    if (report) fputs(report, stdout);
-    asngn_free(report);
-    return e == ASNGN_OK ? 0 : 1;
-  }
   if (frame_dump) return run_frame_dump(frame_dump == 2);
   if (once != NULL)
     return run_once(root, config, workspace, allow_degraded,

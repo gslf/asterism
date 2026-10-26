@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix="asngn-consumption-sdk-") as td:
     journal = engine / "operations.xcdn"
     before = b"".join(records())
     journal.write_bytes(before)
-    command = [sys.argv[1], "--root", str(engine), "--config", str(config)]
+    command = [sys.argv[1], "mcp", "--root", str(engine), "--config", str(config)]
     asyncio.run(inspect(command))
     asyncio.run(inspect(command))  # Reopening does not double the counters.
     if len(sys.argv) > 2:

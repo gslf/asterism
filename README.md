@@ -5,12 +5,12 @@ into tools that complete real workflows, with evidence-driven execution.
 
 | Part | Role |
 |---|---|
-| [`asngn/`](asngn) | The application: the engine and its front-ends `asngn` (TUI/CLI), `asngn-mcp`, `asngn-acp` |
+| [`asngn/`](asngn) | The application: the engine and its modes (terminal UI, MCP, ACP) in the one `asterism` executable |
 | [`modules/core/`](modules/core) | Platform layer and utilities shared by every module |
 | [`modules/asmodel/`](modules/asmodel) | Inference runtime: model pool, budgets, HTTP and llama.cpp providers |
 | [`modules/asper/`](modules/asper) | Memory: exact events, semantic records, bounded context |
 | [`modules/astools/`](modules/astools) | Tools: registry, policy, sandboxed execution, standard tools |
-| [`sdk/`](sdk) | Python and JavaScript clients for `asngn-mcp` |
+| [`sdk/`](sdk) | Python and JavaScript clients for `asterism mcp` |
 
 Why it is built this way: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -26,7 +26,8 @@ cmake --build build -j
 ctest --test-dir build
 ```
 
-Executables land in `build/bin/`, tool packages in `build/packages/`.
+The executable is `build/bin/asterism`; the standard tool packages land in
+`build/packages/`.
 On Windows (MSVC) add `--config Release` to the build and `-C Release` to ctest.
 
 | Option | Default | |
@@ -40,22 +41,26 @@ On Windows (MSVC) add `--config Release` to the build and `-C Release` to ctest.
 
 ## Run
 
-The engine keeps all state in one engine root (default `~/asngn`). The
+The engine keeps all state in one engine root (default `~/asterism`). The
 built-in defaults expect the reference models and the standard tools there:
 
 ```bash
-scripts/fetch-models.sh ~/asngn --install-tools   # verified GGUF models + build/packages
+scripts/fetch-models.sh ~/asterism --install-tools   # verified GGUF models + build/packages
 ```
 
 (`scripts/fetch-models.ps1` on Windows.)
 
 ```bash
-build/bin/asngn                        # terminal UI (F1: keys and commands)
-build/bin/asngn --once "Summarize this workspace"
-build/bin/asngn --doctor               # check configuration and models
-build/bin/asngn-mcp --root ~/asngn     # MCP server over stdio
-build/bin/asngn-acp --workspace /path/to/repo --config ~/asngn/config.xcdn
+asterism                                    # terminal UI (F1: keys and commands)
+asterism --once "Summarize this workspace"  # one headless turn
+asterism doctor                             # check configuration and models
+asterism mcp                                # MCP server on stdio
+asterism acp --workspace /path/to/repo      # editor host on stdio (ACP)
+asterism tools check path/to/package        # tool authors: check, catalog, invoke
 ```
+
+One executable, the mode is the first parameter; `asterism <mode> --help`
+lists its options. The engine modes take `--root <dir>` and `--config <file>`.
 
 `<engine-root>/config.xcdn` is optional. [`examples/`](examples) holds starter
 configurations, including one for an OpenAI-compatible server (llama-server,

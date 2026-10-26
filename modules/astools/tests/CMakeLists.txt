@@ -25,9 +25,14 @@ endfunction()
 astools_tool(fake)
 target_link_libraries(astools_tool_fake PRIVATE xcdn)
 
+# The product modes "asterism jail" and "asterism tools", built standalone.
+astools_tool(cli)
+target_link_libraries(astools_tool_cli PRIVATE astools)
 set(ASTOOLS_TEST_ENV "ASTOOLS_TEST_TOOL=$<TARGET_FILE:astools_tool_fake>")
-if(TARGET astools-jail)
-  list(APPEND ASTOOLS_TEST_ENV "ASTOOLS_JAIL=$<TARGET_FILE:astools-jail>")
+if(NOT WIN32)
+  astools_tool(jail)
+  target_link_libraries(astools_tool_jail PRIVATE astools)
+  list(APPEND ASTOOLS_TEST_ENV "ASTOOLS_JAIL=$<TARGET_FILE:astools_tool_jail>")
 endif()
 
 foreach(name duration semver types manifest path callline jscm
@@ -107,16 +112,16 @@ if(NOT WIN32 AND NOT ASTERISM_NO_THREADS)
   endif()
 endif()
 
-# Packaging scripts (scripts/package_*.py), end to end through astools-check.
+# Packaging scripts (scripts/package_*.py), end to end through "tools".
 if(Python3_FOUND AND NOT WIN32 AND NOT ASTERISM_NO_THREADS)
   add_test(NAME astools.mcp_package
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_mcp_package.py
-            --checker $<TARGET_FILE:astools-check> --server $<TARGET_FILE:astools_tool_mcp>)
+            --cli $<TARGET_FILE:astools_tool_cli> --server $<TARGET_FILE:astools_tool_mcp>)
   set_tests_properties(astools.mcp_package PROPERTIES TIMEOUT 60 ENVIRONMENT "${ASTOOLS_TEST_ENV}")
   if(ASTOOLS_CLANGD)
     add_test(NAME astools.lsp_package
       COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_lsp_package.py
-              --checker $<TARGET_FILE:astools-check> --clangd ${ASTOOLS_CLANGD})
+              --cli $<TARGET_FILE:astools_tool_cli> --clangd ${ASTOOLS_CLANGD})
     set_tests_properties(astools.lsp_package PROPERTIES TIMEOUT 45 ENVIRONMENT "${ASTOOLS_TEST_ENV}")
   endif()
 endif()

@@ -1,5 +1,5 @@
 param(
-  [string]$Root = "$env:USERPROFILE\asngn",
+  [string]$Root = "$env:USERPROFILE\asterism",
   [Alias("install-tools")][switch]$InstallTools,
   [switch]$Repair
 )

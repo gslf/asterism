@@ -1,21 +1,23 @@
 # Architecture
 
 One C99 project: an application, four modules and two third-party
-libraries, built by one CMake tree into self-contained executables.
+libraries, built by one CMake tree into one self-contained executable,
+`asterism`.
 
 ```
 asngn/           application
+  main.c         asterism: picks the mode from the first parameter
   src/           engine (libasngn): sessions, turn loop, context, safety, accounting
-  tui/           asngn      terminal UI and one-shot CLI
-  mcp/           asngn-mcp  MCP server (stdio)
-  acp/           asngn-acp  editor host, Agent Client Protocol (POSIX)
+  tui/           default mode: terminal UI and one-shot --once
+  mcp/           asterism mcp: MCP server (stdio)
+  acp/           asterism acp: editor host, Agent Client Protocol (POSIX)
 modules/
   core/          platform and utilities: threads, files, clocks, buffers, hashes, log
   asmodel/       inference runtime: model pool, budgets, providers (HTTP, llama.cpp),
                  and the JSON codec (asmodel_json)
   asper/         memory: exact events, semantic records, bounded context
   astools/       tools: registry, manifests, policy, sandbox, standard tools
-sdk/             Python and JavaScript clients of asngn-mcp
+sdk/             Python and JavaScript clients of asterism mcp
 third_party/     xCDN-C, llama.cpp (git submodules)
 ```
 
@@ -54,14 +56,18 @@ MCP, LSP and provider wire formats share one strict RFC 8259 codec,
 `asmodel_json`. It depends only on libc and is a library of its own, so
 astools speaks MCP and LSP without linking the model providers.
 
-**One process, static linking.**
-The engine calls modules in-process and the front-ends embed all project code
-and llama.cpp. No IPC between components, nothing to version separately.
-Product executables share `bin/`, because the strict sandbox expects
-`astools-jail` next to the host.
+**One executable, modes by parameter.**
+`asterism` is the only binary: terminal UI by default, `--once` for one
+headless turn, `mcp`, `acp`, `doctor` and `tools` as modes. The engine calls
+modules in-process and the binary embeds all project code and llama.cpp
+statically: no IPC between components, nothing to version or install
+separately. The strict sandbox re-executes the same binary in its internal
+`jail` mode to confine a tool before exec. The standard tools are the one
+exception: they ship as a tool package (`astools-std`), like any third-party
+tool.
 
 **One MCP server.**
-Only `asngn-mcp` is exposed. Memory and tools are reached through the engine,
+Only `asterism mcp` is exposed. Memory and tools are reached through the engine,
 which applies approvals, budgets, redaction and safety gates. A server per
 module would bypass that policy and repeat the same protocol code.
 
@@ -96,7 +102,7 @@ requests, the host grants, the effective set is the intersection. Each call
 runs in a child process with a scrubbed environment, a deadline, output caps
 and, at the strict level, kernel confinement where the platform provides it.
 A failing or hostile tool cannot crash the engine or exceed its grants, and
-tools can be written in any language. `astools-check` validates, previews and
+tools can be written in any language. `asterism tools` checks, previews and
 invokes packages for tool authors.
 
 **Inspectable, crash-safe state.**
@@ -105,8 +111,8 @@ single-writer lock per store. A crash loses at most an uncommitted tail, which
 is detected on load.
 
 **Local front-ends only.**
-TUI, MCP and ACP are thin layers over `libasngn`; the SDKs drive `asngn-mcp`
-over stdio. There is no network listener: the operating-system process is the
+TUI, MCP and ACP are thin layers over `libasngn`; the SDKs drive
+`asterism mcp` over stdio. There is no network listener: the operating-system process is the
 trust boundary.
 
 **Third-party code is never patched.**

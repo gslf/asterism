@@ -189,7 +189,8 @@ static char *sandbox_path(const astools_ctx *c) {
 
 /*
  * Jail helper lookup: $ASTOOLS_JAIL when it names an existing file, else
- * <exedir>/astools-jail when present. NULL = strict not enforceable here.
+ * <exedir>/asterism (the jail is a mode of the product executable, run as
+ * "asterism jail -- <tool argv...>"). NULL = strict not enforceable here.
  * (An ASTOOLS_JAIL pointing at a missing file falls through to the exedir
  * default rather than silently selecting a binary that cannot exec.)
  */
@@ -211,7 +212,7 @@ static char *sandbox_jail_path(void) {
                        : core_strndup(exe, (size_t)(slash - exe));
   free(exe);
   if (!dir) return NULL;
-  joined = os_path_join(dir, "astools-jail");
+  joined = os_path_join(dir, "asterism");
   free(dir);
   if (!joined) return NULL;
   if (os_file_exists(joined)) return joined;
@@ -432,10 +433,10 @@ astools_err astools_sandbox_prepare(astools_ctx *c, const astools_tool *t,
       if (c->cfg.strict_fallback_reject)
         return astools_seterr(
             c, ASTOOLS_ERR_UNSUPPORTED,
-            "sandbox strict unavailable: astools-jail helper not found "
+            "sandbox strict unavailable: jail helper (asterism) not found "
             "(missing: fs confinement, net deny, privilege drop)");
       astools_log(c, ASTOOLS_LOG_WARN, "sandbox",
-                  "strict requested but astools-jail helper not found; "
+                  "strict requested but jail helper (asterism) not found; "
                   "degrading to basic (missing: fs confinement, net deny, "
                   "privilege drop)");
       level = ASTOOLS_SB_BASIC;
@@ -448,7 +449,7 @@ astools_err astools_sandbox_prepare(astools_ctx *c, const astools_tool *t,
       if (c->cfg.strict_fallback_reject)
         return astools_seterr(
             c, ASTOOLS_ERR_UNSUPPORTED,
-            "sandbox strict unavailable: Landlock or astools-jail missing");
+            "sandbox strict unavailable: Landlock or the jail helper (asterism) missing");
       astools_log(c, ASTOOLS_LOG_WARN, "sandbox",
                   "strict requested but Landlock/helper is unavailable; "
                   "degrading to basic");
@@ -601,6 +602,8 @@ astools_err astools_sandbox_prepare(astools_ctx *c, const astools_tool *t,
     jail = NULL; /* ownership moves into argv (or is freed by push) */
     e = strv_push(&argv, &argn, &argcap, j);
     if (e == ASTOOLS_OK)
+      e = strv_push(&argv, &argn, &argcap, core_strdup("jail"));
+    if (e == ASTOOLS_OK)
       e = strv_push(&argv, &argn, &argcap, core_strdup("--"));
     if (e != ASTOOLS_OK) {
       e = astools_seterr(c, e, "sandbox: cannot build exec vector");
@@ -705,7 +708,7 @@ astools_err astools_sandbox_caps_impl(int strict, astools_sandbox_caps *out) {
   }
 #endif
 #if defined(__APPLE__)
-  /* strict on macOS: Seatbelt via astools-jail when discoverable — kernel
+  /* strict on macOS: Seatbelt via the jail helper when discoverable — kernel
    * fs confinement, network deny and privilege drop; no syscall filter.
    * Without the helper, strict cannot add anything (honest zeros). */
   if (strict) {

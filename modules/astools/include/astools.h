@@ -259,6 +259,15 @@ astools_err astools_tick(astools_ctx *c);
 void astools_result_free(astools_result *r);
 void astools_free(void *p); /* strings/arrays returned by the API */
 
+/* ---- command line --------------------------------------------------- */
+
+/* "asterism tools <command> ...": check, catalog, grammar, approve and
+ * invoke, for tool authors. argv[0] is the mode name. Returns the exit code. */
+int astools_cli_main(int argc, char **argv);
+/* "asterism jail -- <tool argv...>" (POSIX): applies the strict sandbox the
+ * parent prepared, then execs the tool. Returns only on failure. */
+int astools_jail_main(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

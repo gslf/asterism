@@ -1,13 +1,13 @@
 # ⁂ asterism Python SDK
 
-Async host client for the local `asngn-mcp` server, ⁂ asterism wire contract 1.
+Async host client for the local `asterism mcp` server, ⁂ asterism wire contract 1.
 Requires Python 3.11+. No third-party runtime dependencies.
 
 ```python
 from asterism import Client
 
 async def run():
-    async with await Client.start(["asngn-mcp", "--root", "/absolute/store"]) as client:
+    async with await Client.start(["asterism", "mcp", "--root", "/absolute/store"]) as client:
         task = await client.session("example").submit("Hello")
         result = await task.wait(timeout=120)
         print(result["outcome"], result["task_state"], result["answer"])

@@ -93,7 +93,7 @@ enum {
 };
 
 typedef struct {
-  const char *engine_root; /* override store dir; NULL discovers ~/asngn   */
+  const char *engine_root; /* override store dir; NULL discovers ~/asterism */
   const char *config_path; /* optional config.xcdn; NULL = defaults        */
   const char *workspace_root; /* external override; NULL=config/session    */
   const char *project_id;     /* stable project id; NULL=derived           */
@@ -375,7 +375,7 @@ asngn_err asngn_more_stream(asngn_session *s, asngn_stream_fn fn, void *ud,
 /* scope: "session" | "global" | NULL (= both). */
 asngn_err asngn_cache_clear(asngn_ctx *c, const char *scope);
 
-/* ---- introspection (TUI panes, asngn-mcp) ------------------------------ */
+/* ---- introspection (TUI panes, MCP mode) ------------------------------- */
 
 typedef struct {
   size_t   turns;                 /* committed ledger entries            */

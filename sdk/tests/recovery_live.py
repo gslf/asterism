@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="asngn-recovery-sdk-") as temporary:
                   {"id": name, "path": str(root / "absent.gguf")} for name in ("nano", "light", "std")]}}
     path = root / "config.xcdn"
     path.write_text("#asngn_config " + json.dumps(config))
-    command = [sys.argv[1], "--root", str(root / "engine"), "--config", str(path)]
+    command = [sys.argv[1], "mcp", "--root", str(root / "engine"), "--config", str(path)]
     record = asyncio.run(submit(command))
     journal = root / "engine/sessions/archive/turns.xcdn"
     interrupted = str(uuid.uuid4())

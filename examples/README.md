@@ -1,6 +1,6 @@
 # Starter configurations
 
-Copy what you need into the engine root (default `~/asngn`), never use this
+Copy what you need into the engine root (default `~/asterism`), never use this
 directory as one. Relative paths resolve against the engine root.
 
 | File | Copy to | Purpose |

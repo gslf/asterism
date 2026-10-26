@@ -59,17 +59,17 @@ add_test(NAME asngn.model_manifest
   COMMAND ${CMAKE_COMMAND} "-DMANIFEST=${PROJECT_SOURCE_DIR}/scripts/models.manifest.tsv"
           -P ${CMAKE_CURRENT_SOURCE_DIR}/model_manifest_smoke.cmake)
 
-if(TARGET asngn-mcp)
+if(TARGET asterism)
   add_test(NAME asngn.mcp_protocol
-    COMMAND ${CMAKE_COMMAND} "-DMCP_EXE=$<TARGET_FILE:asngn-mcp>" "-DMCP_ROOT_FLAG=--root"
+    COMMAND ${CMAKE_COMMAND} "-DASTERISM=$<TARGET_FILE:asterism>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/mcp_smoke.cmake)
   set_tests_properties(asngn.mcp_protocol PROPERTIES TIMEOUT 60)
 endif()
 
-if(TARGET asngn_acp)
+if(ASTERISM_ACP)
   add_executable(asngn_test_acp_io acp/io.c)
   target_include_directories(asngn_test_acp_io PRIVATE .)
-  target_link_libraries(asngn_test_acp_io PRIVATE asngn_acp core_test_harness)
+  target_link_libraries(asngn_test_acp_io PRIVATE asngn_frontends core_test_harness)
   asterism_strict(asngn_test_acp_io)
   add_test(NAME asngn.acp_io COMMAND asngn_test_acp_io)
   set_tests_properties(asngn.acp_io PROPERTIES TIMEOUT 20)
@@ -95,27 +95,27 @@ add_test(NAME asngn.quality_oracle
   COMMAND ${Python3_EXECUTABLE} -B -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/quality -p "test_*.py")
 set_tests_properties(asngn.quality_oracle PROPERTIES TIMEOUT 120)
 
-if(TARGET asngn)
-  asngn_py_test(confirmation_tui confirmation_tui.py 60 $<TARGET_FILE:asngn>)
+if(TARGET asterism)
+  asngn_py_test(confirmation_tui confirmation_tui.py 60 $<TARGET_FILE:asterism>)
 endif()
 
-if(TARGET asngn-mcp)
-  asngn_py_test(approval_mcp approval_mcp.py 60 $<TARGET_FILE:asngn-mcp>)
-  asngn_py_test(work_mcp work_smoke.py 60 $<TARGET_FILE:asngn-mcp>)
+if(TARGET asterism)
+  asngn_py_test(approval_mcp approval_mcp.py 60 $<TARGET_FILE:asterism>)
+  asngn_py_test(work_mcp work_smoke.py 60 $<TARGET_FILE:asterism>)
   get_target_property(ASNGN_MODEL_LINKS asmodel INTERFACE_LINK_LIBRARIES)
   if(WIN32 OR "CURL::libcurl" IN_LIST ASNGN_MODEL_LINKS)
-    asngn_py_test(native_wire native_wire.py 60 $<TARGET_FILE:asngn-mcp> $<TARGET_FILE:asngn_fake_tool>)
+    asngn_py_test(native_wire native_wire.py 60 $<TARGET_FILE:asterism> $<TARGET_FILE:asngn_fake_tool>)
   endif()
 endif()
 
-if(TARGET asngn_acp)
+if(ASTERISM_ACP)
   add_executable(asngn_acp_test_driver acp/driver.c fakes.c fixtures.c)
   target_include_directories(asngn_acp_test_driver PRIVATE . ${ASTERISM_XCDN_SRC})
-  target_link_libraries(asngn_acp_test_driver PRIVATE asngn_acp core_test_harness)
+  target_link_libraries(asngn_acp_test_driver PRIVATE asngn_frontends core_test_harness)
   target_compile_definitions(asngn_acp_test_driver PRIVATE
     "ASNGN_TEST_TOOL_PATH=\"$<TARGET_FILE:asngn_fake_tool>\"")
   add_dependencies(asngn_acp_test_driver asngn_fake_tool)
   asterism_strict(asngn_acp_test_driver)
-  asngn_py_test(acp_protocol acp/protocol.py 90 $<TARGET_FILE:asngn-acp> $<TARGET_FILE:asngn_acp_test_driver>)
+  asngn_py_test(acp_protocol acp/protocol.py 90 $<TARGET_FILE:asterism> $<TARGET_FILE:asngn_acp_test_driver>)
   asngn_py_test(acp_lifecycle acp/lifecycle.py 90 $<TARGET_FILE:asngn_acp_test_driver>)
 endif()

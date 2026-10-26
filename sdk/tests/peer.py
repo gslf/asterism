@@ -31,7 +31,7 @@ for line in sys.stdin:
     identity = request["id"]
     if request["method"] == "initialize":
         emit({"jsonrpc": "2.0", "id": identity, "result": {
-            "protocolVersion": "2025-06-18", "serverInfo": {"name": "asngn-mcp", "version": "fixture"},
+            "protocolVersion": "2025-06-18", "serverInfo": {"name": "asterism", "version": "fixture"},
             "capabilities": {"experimental": {"dev.asterism/asngn": {"contractVersion": 1}}}}})
         continue
     args = request["params"]["arguments"]

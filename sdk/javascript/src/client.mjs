@@ -15,7 +15,7 @@ export class Client {
         protocolVersion: '2025-06-18', capabilities: {},
         clientInfo: { name: 'asterism-javascript', version: '0.1.0' },
       }, options);
-      if (reply?.protocolVersion !== '2025-06-18' || reply.serverInfo?.name !== 'asngn-mcp' || typeof reply.serverInfo?.version !== 'string' ||
+      if (reply?.protocolVersion !== '2025-06-18' || reply.serverInfo?.name !== 'asterism' || typeof reply.serverInfo?.version !== 'string' ||
           reply.capabilities?.experimental?.['dev.asterism/asngn']?.contractVersion !== 1) {
         throw new ProtocolError('unsupported asterism contract; version 1 required');
       }

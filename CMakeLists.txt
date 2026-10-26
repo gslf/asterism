@@ -107,29 +107,19 @@ add_subdirectory(modules/astools)
 add_subdirectory(modules/asper)
 add_subdirectory(asngn)
 
-# Product executables side by side in build/bin, as installed: the strict
-# sandbox looks for astools-jail next to the host executable.
-foreach(target asngn asngn-mcp asngn-acp astools-check astools-jail)
-  if(TARGET ${target})
-    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  endif()
-endforeach()
+# The one executable lands in build/bin, as installed.
+if(TARGET asterism)
+  set_target_properties(asterism PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
 
-if(ASTERISM_BUILD_TESTS AND Python3_FOUND AND TARGET asngn-mcp)
+if(ASTERISM_BUILD_TESTS AND Python3_FOUND AND TARGET asterism)
   add_subdirectory(sdk/tests)
 endif()
 
 # ── Install / package ───────────────────────────────────────────────────────
 include(GNUInstallDirs)
-if(ASTERISM_FRONTENDS)
-  install(TARGETS asngn asngn-mcp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
-if(TARGET asngn-acp)
-  install(TARGETS asngn-acp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
-install(TARGETS astools-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-if(TARGET astools-jail)
-  install(TARGETS astools-jail RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(TARGET asterism)
+  install(TARGETS asterism RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(DIRECTORY "${CMAKE_BINARY_DIR}/packages/"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/asterism/tools USE_SOURCE_PERMISSIONS)
