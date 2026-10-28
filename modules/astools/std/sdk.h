@@ -34,6 +34,7 @@ typedef struct {
   const char *workspace;      /* absolute; may be NULL */
   const char *scratch;        /* absolute; may be NULL */
   int64_t max_output_bytes;   /* 0 = unlimited */
+  int64_t deadline_unix;      /* request deadline, unix seconds; 0 = absent */
 } astd_req;
 
 /* Read all of stdin, parse the request. Returns 0 on success; on failure
@@ -115,6 +116,7 @@ int astd_tool_proc(astd_req *r);
 int astd_tool_git(astd_req *r);
 int astd_tool_code(astd_req *r);
 int astd_tool_project(astd_req *r);
+int astd_tool_delegate(astd_req *r);
 
 /* ---- regex.c — in-house linear-time ERE subset -------------- */
 

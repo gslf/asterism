@@ -310,6 +310,16 @@ int astd_req_read(astd_req *r) {
   r->workspace = obj_field_str(obj, "workspace");
   r->scratch = obj_field_str(obj, "scratch");
 
+  /* The runtime kills the tool at this instant; long-running tools stop
+   * their own children a little earlier so they can still answer. */
+  v = obj_field(obj, "deadline");
+  if (v && (v->type == XCDN_VAL_DATETIME || v->type == XCDN_VAL_STRING) &&
+      v->data.string) {
+    core_time t = 0;
+    if (core_time_parse_rfc3339(v->data.string, &t) && t > 0)
+      r->deadline_unix = (int64_t)t;
+  }
+
   v = obj_field(obj, "limits");
   if (v && v->type == XCDN_VAL_OBJECT) {
     const xcdn_value_t *m = obj_field(v, "max_output_bytes");

@@ -108,7 +108,10 @@ static asper_err fill_scope(asper_ctx *c, pending_scope *s) {
   while (e == ASPER_OK && s->cursor < s->end && asper_turn_queue_room(c)) {
     asper_event event = {0};
     e = asper_source_view_head(&view, s->cursor + 1, &event);
+    /* Untrusted text stays exact and recallable but is never curated into
+     * semantic records: a forwarded message must not become a remembered fact. */
     if (e == ASPER_OK && (event.kind == ASPER_EVENT_USER || event.kind == ASPER_EVENT_ASSISTANT) &&
+        asper_origin_trusted(event.origin) &&
         !asper_source_curated_has(p->curated, p->curated_n, event.id)) {
       e = asper_source_view_read(&view, s->cursor + 1, &event);
       const asper_source_deferral *deferred = asper_source_deferred_find(

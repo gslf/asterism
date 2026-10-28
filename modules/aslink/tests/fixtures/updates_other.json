@@ -1,0 +1,11 @@
+{"ok":true,"result":[
+ {"update_id":50,"edited_message":{"message_id":42,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001600,"edit_date":1793001650,"text":"edited"}},
+ {"update_id":51,"my_chat_member":{"chat":{"id":5,"type":"private"},"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "date":1793002000,"old_chat_member":{"status":"member","user":{"id":999,"is_bot":true,"first_name":"Asterism"}},
+  "new_chat_member":{"status":"kicked","until_date":0,"user":{"id":999,"is_bot":true,"first_name":"Asterism"}}}},
+ {"update_id":52,"stopped_message_generation":{"chat":{"id":5,"first_name":"Ann","type":"private"},
+  "message_thread_id":100,"draft_id":8812}},
+ {"update_id":53,"brand_new_kind":{"anything":[1,2,3]}},
+ {"update_id":54}
+]}

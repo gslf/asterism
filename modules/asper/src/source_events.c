@@ -89,6 +89,7 @@ asper_err asper_event_append(asper_ctx *c, const asper_event_input *event,
                             "source: invalid event arguments")
              : ASPER_ERR_INVALID;
   if (event->kind < ASPER_EVENT_USER || event->kind > ASPER_EVENT_ARTIFACT ||
+      event->origin < ASPER_ORIGIN_HOST || event->origin > ASPER_ORIGIN_LAST ||
       !core_utf8_count(event->text, NULL) ||
       (event->object_ref && event->object_ref[0] &&
        !asper_source_object_valid(event->object_ref)))
@@ -111,6 +112,7 @@ asper_err asper_event_append(asper_ctx *c, const asper_event_input *event,
   stored.at = at;
   stored.kind = event->kind;
   stored.pinned = event->pinned != 0;
+  stored.origin = event->origin;
   stored.text = (char *)event->text;
   e = asper_event_log_append(path, &stored);
   if (e == ASPER_OK && out_id) memcpy(out_id, id, 37);

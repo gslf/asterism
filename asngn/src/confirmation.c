@@ -23,10 +23,11 @@ static asngn_err publish(asngn_ctx *c, asngn_turn_state *t, const asngn_tool_not
           ? asngn_buf_printf(&b,
                              "{confirm_id:u\"%s\",tool:\"%s\",command:\"%s\",args:%s,"
                              "arguments_sha256:\"%s\",package_sha256:\"%s\",snapshot:\"%s\","
-                             "destructive:%s,read_only:%s}",
+                             "destructive:%s,read_only:%s,network:%s,taint:\"%s\"}",
                              a->id, a->tool_ref, a->command, quoted, a->arguments_sha256,
                              a->package_sha256, a->snapshot, note->destructive ? "true" : "false",
-                             note->read_only ? "true" : "false")
+                             note->read_only ? "true" : "false",
+                             note->network ? "true" : "false", asngn_origin_name(t->taint))
           : ASNGN_ERR_NOMEM;
   if (e == ASNGN_OK)
     asngn_tele_emit(c, "confirm", t->span_root, NULL, t->s->slug, t->led.turn, b.data);
@@ -44,18 +45,31 @@ asngn_err asngn_call_confirm(asngn_ctx *c, asngn_turn_state *t,
   *allowed = false;
   *deny_code = "astools/denied";
   t->approval_id[0] = 0;
-  if ((note->read_only && !note->destructive) || c->cfg.autoconfirm == ASNGN_CONFIRM_ALLOW ||
-      (c->cfg.autoconfirm == ASNGN_CONFIRM_PROMPT &&
-       t->security_profile == ASNGN_SECURITY_AUTOMATION_CI && !note->destructive)) {
-    *allowed = true;
-    return ASNGN_OK;
-  }
-  if (c->cfg.autoconfirm == ASNGN_CONFIRM_DENY) {
-    *deny_code = "asngn/confirm-required";
-    return ASNGN_OK;
+  /* Taint gate: after untrusted content entered the turn, nothing that writes
+   * or reaches the network runs on policy alone. Only a person reviewing the
+   * exact arguments can allow it, so standing grants and autoconfirm do not
+   * apply, and a host that cannot prompt denies. */
+  bool tainted = t->taint != ASNGN_ORIGIN_HOST && t->taint != ASNGN_ORIGIN_OWNER;
+  bool gated = tainted && (!note->read_only || note->destructive || note->network);
+  if (gated) {
+    if (c->cfg.autoconfirm != ASNGN_CONFIRM_PROMPT) {
+      *deny_code = "asngn/tainted-confirm-required";
+      return ASNGN_OK;
+    }
+  } else {
+    if ((note->read_only && !note->destructive) || c->cfg.autoconfirm == ASNGN_CONFIRM_ALLOW ||
+        (c->cfg.autoconfirm == ASNGN_CONFIRM_PROMPT &&
+         t->security_profile == ASNGN_SECURITY_AUTOMATION_CI && !note->destructive)) {
+      *allowed = true;
+      return ASNGN_OK;
+    }
+    if (c->cfg.autoconfirm == ASNGN_CONFIRM_DENY) {
+      *deny_code = "asngn/confirm-required";
+      return ASNGN_OK;
+    }
   }
   asngn_approval_grant_key(t, tool, grant);
-  for (size_t i = 0; i < s->allow_n; i++)
+  for (size_t i = 0; !gated && i < s->allow_n; i++)
     if (!strcmp(s->allow[i], grant)) {
       *allowed = true;
       return ASNGN_OK;
@@ -119,7 +133,8 @@ asngn_err asngn_call_confirm(asngn_ctx *c, asngn_turn_state *t,
   if (saved != ASNGN_OK) return saved;
   *allowed = status == ASNGN_APPROVAL_CONSUMED;
   if (*allowed) memcpy(t->approval_id, id, 37);
-  if (*allowed && wide) {
+  /* A tainted review is one-shot: it never becomes a standing grant. */
+  if (*allowed && wide && !gated) {
     char **next = realloc(s->allow, (s->allow_n + 1) * sizeof *next);
     if (next) {
       s->allow = next;

@@ -58,19 +58,21 @@ if(NOT WIN32)
 endif()
 
 # ── astools-std: the standard tools, one busybox-style binary ───────────────
-set(ASTOOLS_STD_TOOLS fs grep edit sys env proc git code project)
+set(ASTOOLS_STD_TOOLS fs grep edit sys env proc git code project delegate)
 set(ASTOOLS_STD_SOURCES
   std/main.c std/version.c std/sdk.c std/regex.c
   std/tool_fs.c std/tool_grep.c std/tool_edit.c std/tool_sys.c std/tool_env.c
   std/tool_proc.c std/process_capture.c std/process_output.c std/tool_git.c
   std/tool_code.c std/tool_project.c std/project_receipt.c
+  std/tool_delegate.c std/delegate_events.c std/delegate_run.c
   src/duration.c)
 if(WIN32)
   list(APPEND ASTOOLS_STD_SOURCES std/compat_win32.c)
 endif()
 add_executable(astools-std ${ASTOOLS_STD_SOURCES})
 target_include_directories(astools-std PRIVATE src std ${ASTERISM_XCDN_SRC})
-target_link_libraries(astools-std PRIVATE core xcdn)
+# asmodel_json: the delegate parses the agent CLIs' JSON event streams.
+target_link_libraries(astools-std PRIVATE core xcdn asmodel_json)
 asterism_strict(astools-std)
 
 # Ready-to-copy registry: <build>/packages/<tool>/{manifest.xcdn,bin/<plat>/}.

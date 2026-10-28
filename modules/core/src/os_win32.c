@@ -349,6 +349,22 @@ int os_file_exists(const char *path)
     return attrs != INVALID_FILE_ATTRIBUTES ? 1 : 0;
 }
 
+int os_is_dir(const char *path)
+{
+    wchar_t *w;
+    DWORD attrs;
+
+    if (path == NULL)
+        return 0;
+    w = os_u8_to_wide(path);
+    if (w == NULL)
+        return 0;
+    attrs = GetFileAttributesW(w);
+    free(w);
+    return attrs != INVALID_FILE_ATTRIBUTES &&
+           (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+
 core_err os_remove_file(const char *path)
 {
     wchar_t *w;

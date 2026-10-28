@@ -22,7 +22,7 @@ jobs:
           - { name: linux-no-threads, os: ubuntu-latest, cc: gcc, cxx: g++, flags: "-DASTERISM_NO_THREADS=ON" }
           - { name: linux-llama, os: ubuntu-latest, cc: gcc, cxx: g++, flags: "-DASTERISM_WITH_LLAMA=ON -DGGML_NATIVE=OFF" }
           - { name: macos-clang, os: macos-latest, cc: clang, cxx: clang++, flags: "" }
-          - { name: windows-msvc, os: windows-latest, cc: cl, cxx: cl, flags: "" }
+          - { name: windows-msvc, os: windows-latest, cc: cl, cxx: cl, flags: "-DASLINK_TRANSPORT=winhttp" }
     steps:
       - uses: actions/checkout@v7
         with: { submodules: recursive }
@@ -40,6 +40,10 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DASTERISM_WITH_LLAMA=OFF ${{ matrix.flags }}
       - name: Build
         run: cmake --build build --config Release -j 4
+      - name: aslink network suites registered
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ctest --test-dir build -C Release -N -R '^aslink\.(telegram|transport)$' | grep -q 'Total Tests: 2'
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: SDK packages
@@ -54,6 +58,25 @@ jobs:
           name: test-logs-${{ matrix.name }}
           path: build/Testing/Temporary/*.log
           if-no-files-found: ignore
+
+  installers:
+    name: installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck install.sh
+        shell: bash
+        run: |
+          choco install shellcheck -y --no-progress >/dev/null
+          shellcheck -s sh install.sh scripts/fetch-models.sh
+      - name: PSScriptAnalyzer install.ps1
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path install.ps1, scripts/fetch-models.ps1 -Severity Warning, Error `
+            -ExcludeRule PSAvoidUsingWriteHost
+          $issues | Format-Table -AutoSize
+          if ($issues) { exit 1 }
 
   fuzz:
     name: fuzz-${{ matrix.module }}-${{ matrix.input }}

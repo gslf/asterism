@@ -17,6 +17,11 @@ add_library(asmodel STATIC
   src/tool_decode.c
   src/openai.c
   src/openai_decode.c
+  src/http.c
+  src/chatgpt.c
+  src/chatgpt_decode.c
+  src/chatgpt_auth.c
+  src/chatgpt_login.c
   src/llama.c
   src/tokens.c
   src/pipeline.c)
@@ -28,7 +33,8 @@ if(CURL_FOUND)
   target_link_libraries(asmodel PUBLIC CURL::libcurl)
 endif()
 if(WIN32)
-  target_link_libraries(asmodel PUBLIC winhttp)
+  # ws2_32: the transient loopback listener of the ChatGPT login flow.
+  target_link_libraries(asmodel PUBLIC winhttp ws2_32)
 else()
   target_link_libraries(asmodel PUBLIC m)
 endif()

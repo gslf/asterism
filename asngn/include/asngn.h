@@ -289,11 +289,31 @@ asngn_err asngn_session_work_get(asngn_session *s, asngn_work_state **out);
 /* REASONING is a short, redacted rationale from a validated action. */
 typedef void (*asngn_stream_fn)(const asngn_stream_event *event, void *ud);
 
+/* Who wrote a submitted turn. HOST (zero) is the local operator or a trusted
+ * host; OWNER is the authenticated owner on a remote channel. Every other
+ * origin is untrusted data and taints the turn: each action that is not purely
+ * read-only, or whose tool may reach the network, then needs an explicit
+ * confirmation whatever the profile, autoconfirm policy or earlier
+ * session-wide grants. A turn also becomes tainted when a network-capable
+ * tool or a delegated agent returns content. */
+typedef enum {
+  ASNGN_ORIGIN_HOST = 0,
+  ASNGN_ORIGIN_OWNER,
+  ASNGN_ORIGIN_FORWARDED,   /* forwarded or quoted by the owner           */
+  ASNGN_ORIGIN_THIRD_PARTY, /* another sender                             */
+  ASNGN_ORIGIN_WEB,         /* fetched network content                    */
+  ASNGN_ORIGIN_DELEGATE,    /* output of a delegated external agent       */
+  ASNGN_ORIGIN_AGENT        /* another asterism agent                     */
+} asngn_origin;
+/* Stable lowercase name ("host", "owner", "forwarded", ...). */
+const char *asngn_origin_name(asngn_origin origin);
+
 typedef struct {
   asngn_detail detail;      /* override; AUTO = controller decides         */
   uint32_t     deadline_ms; /* 0 = configured default (unlimited by default) */
   int          no_tools;    /* disable CALL for this turn                  */
   int          no_cache;    /* bypass the semantic cache for this turn     */
+  asngn_origin origin;      /* author of the text; zero = HOST             */
 } asngn_submit_opts;
 
 typedef struct {
@@ -344,6 +364,7 @@ typedef struct {
   asngn_approval_status status;
   int session_wide;
   char *arguments; /* owned, complete redacted display; execution uses its bound hash */
+  asngn_origin taint; /* process-local: why the turn needed review; HOST = untainted */
 } asngn_approval;
 /* Latest durable approval for this session; NOT_FOUND before the first request.
  * Reopening an interrupted process never replays the associated action. */
@@ -435,11 +456,48 @@ asngn_err asngn_tool_enable(asngn_ctx *c, const char *ref, int on);
  * with citations; asngn_free. */
 asngn_err asngn_recall(asngn_ctx *c, const char *question, char **out);
 
-/* Select the ⁂ asper project for this session; NULL deselects. The
- * semantic cache is additionally partitioned by the project slug. */
+/* ---- projects ---------------------------------------------------------- */
+
+/* A project is a named folder the agent works in: a new one under
+ * <root>/projects/<name>, or an existing directory of the machine. Its
+ * name is also its ⁂ asper project, so memory stays partitioned per
+ * project. The registry is <root>/projects.xcdn; removing a project never
+ * touches its folder. */
+#define ASNGN_PROJECT_NAME_MAX 40
+typedef struct {
+  char      name[ASNGN_PROJECT_NAME_MAX + 1]; /* slug                   */
+  char      path[ASNGN_WORKSPACE_PATH_MAX];   /* canonical directory    */
+  long long created_at;                       /* unix seconds UTC       */
+} asngn_project_info;
+
+/* path NULL creates <root>/projects/<name>; otherwise an existing
+ * directory ("~/" is the home directory). Refused: system directories,
+ * the home directory itself, the engine root (only its projects/ folder
+ * is allowed) and folders inside or around another project's. */
+asngn_err asngn_project_add(asngn_ctx *c, const char *name, const char *path,
+                            asngn_project_info *out);
+asngn_err asngn_project_remove(asngn_ctx *c, const char *name);
+asngn_err asngn_project_get(asngn_ctx *c, const char *name,
+                            asngn_project_info *out);
+/* Registered projects sorted by name; asngn_free the array. */
+asngn_err asngn_projects_list(asngn_ctx *c, asngn_project_info **out,
+                              size_t *out_n);
+/* 1 while a turn holds the project; slug (may be NULL) receives the
+ * session running it. */
+int asngn_project_busy(asngn_ctx *c, const char *name, char *slug,
+                       size_t slug_size);
+
+/* Select the session's project; NULL deselects. A registered project is
+ * also the session's workspace: tools and delegates work in its folder,
+ * one turn at a time across sessions, and a chat session switches to
+ * coding (coding-sandboxed). Any other slug only selects the ⁂ asper
+ * project. Projects need session workspaces: ASNGN_ERR_UNSUPPORTED on an
+ * engine bound to one workspace. The semantic cache is additionally
+ * partitioned by the project slug. */
 asngn_err asngn_session_project(asngn_session *s, const char *slug);
-asngn_err asngn_project_list(asngn_ctx *c, char ***out_slugs,
-                             size_t *out_n);
+/* ⁂ asper projects (memory partitions), registered or not. */
+asngn_err asngn_memory_project_list(asngn_ctx *c, char ***out_slugs,
+                                    size_t *out_n);
 
 /* Toggle the model-visible redaction scan for this session. */
 asngn_err asngn_session_redact(asngn_session *s, int on);

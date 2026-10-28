@@ -185,7 +185,7 @@ TEST(deferred_inputs_keep_their_original_project_across_restart) {
   ASSERT_EQ_INT(seen, 7); ASSERT_EQ_INT(duplicate, 0);
   /* An opaque caller-supplied source object remains unchanged and unscoped. */
   char ref[72]; ASSERT_OK(asper_object_put(c, "raw", 3, ref));
-  asper_event_input input = {"inputs", ASPER_EVENT_USER, "opaque origin", ref, 0};
+  asper_event_input input = {"inputs", ASPER_EVENT_USER, "opaque origin", ref, 0, ASPER_ORIGIN_HOST};
   ASSERT_OK(asper_event_append(c, &input, NULL)); ASSERT_EQ_INT(c->turns_n, 1);
   ASSERT_EQ_STR(c->turns[0].project, "");
   asper_event *events = NULL; size_t n = 0;
@@ -204,7 +204,7 @@ TEST(missing_or_malformed_origin_cannot_be_silently_treated_as_unscoped) {
       const char *bad = "#turn {project: 42}";
       ASSERT_OK(asper_object_put(c, bad, strlen(bad), ref));
     }
-    asper_event_input input = {"inputs", ASPER_EVENT_USER, "unvalidated origin", ref, 0};
+    asper_event_input input = {"inputs", ASPER_EVENT_USER, "unvalidated origin", ref, 0, ASPER_ORIGIN_HOST};
     ASSERT_OK(asper_event_append(c, &input, NULL)); ASSERT_EQ_INT(c->turns_n, 0);
     ASSERT_ERR(asper_flush(c, 1), missing ? ASPER_ERR_NOT_FOUND : ASPER_ERR_PARSE);
     ASSERT_EQ_INT(curator.calls, 0); ASSERT_TRUE(c->source_backlog);

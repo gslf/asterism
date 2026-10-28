@@ -1,4 +1,6 @@
-/* AEV2: bounded, length-delimited UTF-8 with metadata and payload integrity. */
+/* AEV2: bounded, length-delimited UTF-8 with metadata and payload integrity.
+ * AEV3 is AEV2 plus the event origin; it is written only for non-host
+ * origins, so host-authored logs stay byte-identical to AEV2. */
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -7,6 +9,10 @@
 #include "event_log.h"
 
 static int prefix(char out[192], const asper_event *e, size_t obj, size_t text) {
+  if (e->origin != ASPER_ORIGIN_HOST)
+    return snprintf(out, 192, "AEV3 %llu %lld %d %d %d %s %zu %zu",
+        e->sequence, (long long)e->at, (int)e->kind, e->pinned,
+        (int)e->origin, e->id, obj, text);
   return snprintf(out, 192, "AEV2 %llu %lld %d %d %s %zu %zu",
       e->sequence, (long long)e->at, (int)e->kind, e->pinned, e->id,
       obj, text);
@@ -74,11 +80,13 @@ asper_err asper_event_frame_head(FILE *f, asper_event *e, size_t *object_bytes,
     return ferror(f) ? ASPER_ERR_IO : ASPER_ERR_NOT_FOUND;
   if (!strchr(line, '\n')) {
     size_t n = strlen(line);
-    bool prefix_ok = !strncmp(line,"AEV2 ",n < 5 ? n : 5);
+    bool prefix_ok = !strncmp(line,"AEV2 ",n < 5 ? n : 5) ||
+                     !strncmp(line,"AEV3 ",n < 5 ? n : 5);
     return ferror(f) ? ASPER_ERR_IO :
         (feof(f) && prefix_ok ? ASPER_ERR_NOT_FOUND : ASPER_ERR_PARSE);
   }
-  if (strncmp(line, "AEV2 ", 5)) return ASPER_ERR_PARSE;
+  bool v3 = !strncmp(line, "AEV3 ", 5);
+  if (!v3 && strncmp(line, "AEV2 ", 5)) return ASPER_ERR_PARSE;
   p = line+5;
   if (!number(&p, ULLONG_MAX, &seq) || !seq) return ASPER_ERR_PARSE;
   if (*p != '-' && !isdigit((unsigned char)*p)) return ASPER_ERR_PARSE;
@@ -91,6 +99,11 @@ asper_err asper_event_frame_head(FILE *f, asper_event *e, size_t *object_bytes,
   e->kind = (asper_event_kind)value;
   if (!number(&p, 1, &value)) return ASPER_ERR_PARSE;
   e->pinned = (int)value;
+  /* AEV3 never carries the host origin: the canonical prefix check rejects it. */
+  if (v3) {
+    if (!number(&p, ASPER_ORIGIN_LAST, &value)) return ASPER_ERR_PARSE;
+    e->origin = (asper_origin)value;
+  }
   if (strlen(p) < 37 || p[36] != ' ') return ASPER_ERR_PARSE;
   memcpy(e->id, p, 36); p += 37;
   if (!core_uuid_valid(e->id) || !number(&p, 71, &value) ||

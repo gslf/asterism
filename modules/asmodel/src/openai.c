@@ -2,6 +2,7 @@
 #include "openai_decode.h"
 #include "input_json.h"
 #include "tools.h"
+#include "chatgpt.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -716,6 +717,8 @@ int asmodel_openai_provider_create(const asmodel_spec *spec,
                                    asmodel_provider *out,
                                    char *error, size_t error_size) {
   oai_provider *u;
+  if (spec && spec->remote_provider == ASMODEL_REMOTE_CHATGPT)
+    return asmodel_chatgpt_provider_create(spec, out, error, error_size);
   if (!spec || !out || !spec->base_url || !spec->remote_model) return -1;
   u = (oai_provider *)calloc(1, sizeof *u);
   if (!u) return -1;
@@ -745,7 +748,8 @@ int asmodel_openai_provider_create(const asmodel_spec *spec,
 int asmodel_openai_provider_create(const asmodel_spec *spec,
                                    asmodel_provider *out,
                                    char *error, size_t error_size) {
-  (void)spec;
+  if (spec && spec->remote_provider == ASMODEL_REMOTE_CHATGPT)
+    return asmodel_chatgpt_provider_create(spec, out, error, error_size);
   if (out) memset(out, 0, sizeof *out);
   if (error && error_size)
     snprintf(error, error_size, "asmodel built without libcurl");

@@ -3,11 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Content returned by a network-capable tool or a delegated agent is
+ * untrusted: the turn stays tainted from here on (see asngn_call_confirm). */
+static void taint_from(asngn_turn_state *t, const asngn_tool_note *note) {
+  if (t->taint != ASNGN_ORIGIN_HOST && t->taint != ASNGN_ORIGIN_OWNER) return;
+  if (note->delegate) t->taint = ASNGN_ORIGIN_DELEGATE;
+  else if (note->network) t->taint = ASNGN_ORIGIN_WEB;
+}
+
 asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line,
                              const char *fallback) {
   asngn_session *s = t->s;
   char *ref = NULL, *cmd = NULL, *args = NULL, *expanded_args = NULL;
   char *canon_args = NULL;
+  char *resolved_args = NULL; /* exec_args with secrets, for the tool only */
   const char *exec_args;
   asngn_tool_note note;
   uint8_t key[32], cache_key[32], call_key[32], draft_intent[32];
@@ -144,6 +153,14 @@ asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line
   note.idempotent = selected->idempotent;
   note.long_running = selected->long_running;
   snprintf(note.version, sizeof note.version, "%s", strchr(selected->ref, '@') + 1);
+  {
+    /* Network and delegate grants come from the package manifest. */
+    asngn_tool_note manifest;
+    if (asngn_modules_annotations(c, selected->ref, cmd, &manifest) == ASNGN_OK) {
+      note.network = manifest.network;
+      note.delegate = manifest.delegate;
+    }
+  }
 
   if (t->security_profile == ASNGN_SECURITY_CODING_READONLY &&
       (!note.read_only || note.destructive)) {
@@ -272,6 +289,7 @@ asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line
       }
       free(hit);
       cached_hit = true;
+      taint_from(t, &note);
       /* a replayed result still makes this a tool-touched turn:
        * its answer must never become verbatim-reusable */
       t->tools_used = true;
@@ -317,6 +335,17 @@ asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line
                asngn_security_profile_name(t->security_profile));
       asngn_tele_emit(c, "authorization", t->span_root, NULL, s->slug, t->led.turn, auth_data);
       e = asngn_call_error(c, t, ref, cmd, args, deny_code, notice);
+      if (e == ASNGN_OK) asngn_call_fallback(c, t, fallback);
+      goto out;
+    }
+  }
+
+  /* Secrets: placeholders stay in every record; values reach only the tool. */
+  {
+    char why[256];
+    if (asngn_secrets_resolve(c, ref, exec_args, &resolved_args, why, sizeof why) != ASNGN_OK) {
+      asngn_turn_stream_emit(t, ASNGN_STREAM_NOTICE, why);
+      e = asngn_call_error(c, t, ref, cmd, args, "asvault/denied", why);
       if (e == ASNGN_OK) asngn_call_fallback(c, t, fallback);
       goto out;
     }
@@ -377,7 +406,13 @@ asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line
         asngn_workspace_refresh(c) == ASNGN_OK)
       memcpy(proof_base, c->workspace.fingerprint, sizeof proof_base);
     asngn_action_event(t, ref, cmd, exec_args, NULL, ASTOOLS_OK, true);
-    ae = (astools_err)asngn_tools_invoke(t, selected->tool, exec_args, deadline_ms, &r);
+    ae = (astools_err)asngn_tools_invoke(t, selected->tool,
+                                         resolved_args ? resolved_args : exec_args, deadline_ms, &r);
+    asngn_secrets_free(resolved_args);
+    resolved_args = NULL;
+    asngn_secrets_redact(c, &r.result_xcdn);
+    asngn_secrets_redact(c, &r.error_message);
+    taint_from(t, &note);
     t->tool_calls++;
     t->tools_used = true;
     if (ae == ASTOOLS_OK && r.ok) t->tool_ok_seen = true;
@@ -517,6 +552,7 @@ asngn_err asngn_call_execute(asngn_ctx *c, asngn_turn_state *t, const char *line
 
 out:
   (void)cached_hit;
+  asngn_secrets_free(resolved_args);
 
   free(canon_args);
   free(expanded_args);

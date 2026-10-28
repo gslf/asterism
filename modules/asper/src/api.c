@@ -50,6 +50,17 @@ const char *asper_err_name(asper_err e) {
   }
 }
 
+const char *asper_origin_name(asper_origin origin) {
+  static const char *names[] = {"host", "owner", "forwarded", "third_party",
+                                "web", "delegate", "agent"};
+  return origin >= ASPER_ORIGIN_HOST && origin <= ASPER_ORIGIN_LAST
+             ? names[origin] : "unknown";
+}
+
+int asper_origin_trusted(asper_origin origin) {
+  return origin == ASPER_ORIGIN_HOST || origin == ASPER_ORIGIN_OWNER;
+}
+
 asper_err asper_seterr(asper_ctx *c, asper_err e, const char *fmt, ...) {
   va_list ap;
   if (!c || !fmt) return e;

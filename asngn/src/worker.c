@@ -88,6 +88,7 @@ static void task_finish(asngn_ctx *c, asngn_task *task, asngn_err verdict) {
     s->busy = false;
     s->running = NULL;
     os_rwlock_wrunlock(&s->lock);
+    asngn_project_release(s->ctx, task->project); /* held at submit */
   }
   task->done = true;
   os_cond_broadcast(&task->cv);

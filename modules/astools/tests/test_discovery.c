@@ -125,7 +125,45 @@ TEST(late_relevant_tool_survives_large_registry) {
   astools_selection_free(s);
   drop(&f);
 }
+/* Engines query with the user's own words. A request to create a file must
+ * reach the command that writes files, not commands whose names or
+ * summaries merely contain "in" or "the" (insert, lint, info). */
+TEST(ranking_matches_words_not_substrings) {
+  fixture f;
+  ASSERT_TRUE(setup(&f));
+  ASSERT_TRUE(fake_registry_write(f.root, "fs", NULL, NULL, NULL,
+                                  "#command {name:\"write\",summary:\"Write content to a file.\","
+                                  "description:\"Mode create refuses to overwrite a file.\","
+                                  "params:[]}",
+                                  NULL));
+  ASSERT_TRUE(fake_registry_write(
+      f.root, "edit", NULL, NULL, NULL,
+      "#command {name:\"insert\",summary:\"Insert content at a line in a text file.\",params:[]}",
+      NULL));
+  ASSERT_TRUE(fake_registry_write(
+      f.root, "project", NULL, NULL, NULL,
+      "#command {name:\"lint\",summary:\"Run the lint workflow in the workspace.\",params:[]}",
+      NULL));
+  ASSERT_TRUE(fake_registry_write(
+      f.root, "sys", NULL, NULL, NULL,
+      "#command {name:\"info\",summary:\"Describe the host.\",params:[]}", NULL));
+  ASSERT_OK(astools_registry_refresh(f.ctx));
+  astools_discovery_options o = {.intent = "Create a file named hello.txt containing the word "
+                                           "hello, then list the files in the workspace.",
+                                 .limit = 1};
+  astools_selection *s = NULL;
+  ASSERT_OK(astools_discover(f.ctx, &o, &s));
+  ASSERT_TRUE(!strcmp(astools_selection_get(s, 0)->tool, "fs.write"));
+  astools_selection_free(s);
+  /* Inflected forms still reach the command named by their stem. */
+  o.intent = "inserting lines";
+  ASSERT_OK(astools_discover(f.ctx, &o, &s));
+  ASSERT_TRUE(!strcmp(astools_selection_get(s, 0)->tool, "edit.insert"));
+  astools_selection_free(s);
+  drop(&f);
+}
 TEST_LIST = {TEST_ENTRY(late_relevant_tool_survives_large_registry),
+             TEST_ENTRY(ranking_matches_words_not_substrings),
              TEST_ENTRY(selection_is_consistent_and_revalidated),
              TEST_ENTRY(discovery_budget_allowlist_and_static_denials)};
 RUN_ALL_TESTS()

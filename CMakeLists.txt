@@ -105,6 +105,9 @@ add_subdirectory(modules/core)
 add_subdirectory(modules/asmodel)
 add_subdirectory(modules/astools)
 add_subdirectory(modules/asper)
+add_subdirectory(modules/aslink)
+add_subdirectory(modules/astime)
+add_subdirectory(modules/asvault)
 add_subdirectory(asngn)
 
 # The one executable lands in build/bin, as installed.
@@ -126,7 +129,18 @@ install(DIRECTORY "${CMAKE_BINARY_DIR}/packages/"
 install(DIRECTORY examples/ DESTINATION ${CMAKE_INSTALL_DATADIR}/asterism/examples)
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/asterism)
 
+# Release archives carry a stable name per platform (install.sh and
+# install.ps1 fetch releases/latest/download/asterism-<platform>.<ext>), with
+# the cmake --install layout inside: bin/, share/asterism/{tools,examples}.
+set(ASTERISM_PACKAGE_PLATFORM "" CACHE STRING "Release archive platform, e.g. linux-x86_64")
 set(CPACK_PACKAGE_NAME asterism)
-set(CPACK_GENERATOR TGZ)
+if(WIN32)
+  set(CPACK_GENERATOR ZIP)
+else()
+  set(CPACK_GENERATOR TGZ)
+endif()
+if(ASTERISM_PACKAGE_PLATFORM)
+  set(CPACK_PACKAGE_FILE_NAME "asterism-${ASTERISM_PACKAGE_PLATFORM}")
+endif()
 set(CPACK_PACKAGE_CHECKSUM SHA256)
 include(CPack)

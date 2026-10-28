@@ -150,11 +150,13 @@ static void ctx_locks_init(asngn_ctx *c) {
   os_rwlock_init(&c->cache_mu);
   os_mutex_init(&c->q_mu);
   os_cond_init(&c->q_cv);
+  os_mutex_init(&c->projects_mu);
   os_mutex_init(&c->confirm.mu);
   os_cond_init(&c->confirm.cv);
 }
 
 static void ctx_locks_destroy(asngn_ctx *c) {
+  os_mutex_destroy(&c->projects_mu);
   os_cond_destroy(&c->confirm.cv);
   os_mutex_destroy(&c->confirm.mu);
   os_cond_destroy(&c->q_cv);
@@ -390,6 +392,7 @@ void asngn_close(asngn_ctx *c) {
   free(c->sessions_dir);
   free(c->cache_dir);
   free(c->tele_dir);
+  asngn_project_holds_free(c);
   ctx_locks_destroy(c);
   free(c);
 }
@@ -1013,6 +1016,13 @@ void asngn_turn_state_free(asngn_turn_state *t) {
   memset(t, 0, sizeof *t);
 }
 
+const char *asngn_origin_name(asngn_origin origin) {
+  static const char *names[] = {"host", "owner", "forwarded", "third_party",
+                                "web", "delegate", "agent"};
+  return origin >= ASNGN_ORIGIN_HOST && origin <= ASNGN_ORIGIN_AGENT
+             ? names[origin] : "unknown";
+}
+
 static void session_lock_for_update(asngn_ctx *c, asngn_session *s) {
   (void)c;
   os_rwlock_wrlock(&s->lock);
@@ -1028,6 +1038,11 @@ static asngn_err submit_common(asngn_session *s, char *gated_msg,
   asngn_task *task;
   asngn_turn_state *t;
 
+  if (opts != NULL &&
+      (opts->origin < ASNGN_ORIGIN_HOST || opts->origin > ASNGN_ORIGIN_AGENT)) {
+    free(gated_msg);
+    return asngn_seterr(c, ASNGN_ERR_INVALID, "invalid turn origin");
+  }
   task = calloc(1, sizeof *task);
   t = calloc(1, sizeof *t);
   if (task == NULL || t == NULL) {
@@ -1039,6 +1054,12 @@ static asngn_err submit_common(asngn_session *s, char *gated_msg,
   t->s = s;
   t->user_msg = gated_msg;
   if (opts != NULL) t->opts = *opts;
+  /* Untrusted text taints the turn from the start and never feeds or reads
+   * the semantic answer cache. */
+  if (t->opts.origin != ASNGN_ORIGIN_HOST && t->opts.origin != ASNGN_ORIGIN_OWNER) {
+    t->taint = t->opts.origin;
+    t->opts.no_cache = 1;
+  }
   t->continuation = continuation;
   t->retry_up = retry_up;
   t->token_cb = token_fn;
@@ -1067,6 +1088,23 @@ static asngn_err submit_common(asngn_session *s, char *gated_msg,
     return asngn_seterr(c, ASNGN_ERR_BUSY,
                         "session %s: a turn is already running", s->slug);
   }
+  /* One turn per project folder, whatever session it comes from. */
+  if (s->project != NULL && c->session_workspaces) {
+    asngn_project_info p;
+    asngn_err he = ASNGN_OK; /* a memory-only project holds nothing */
+    bool held = asngn_project_lookup(c, s->project, &p) == ASNGN_OK;
+    if (held) he = asngn_project_hold(c, p.name, s->slug);
+    if (he != ASNGN_OK) {
+      os_rwlock_wrunlock(&s->lock);
+      os_cond_destroy(&task->cv);
+      os_mutex_destroy(&task->mu);
+      asngn_turn_state_free(t);
+      free(t);
+      free(task);
+      return he;
+    }
+    if (held) snprintf(task->project, sizeof task->project, "%s", p.name);
+  }
   s->busy = true;
   t->work_revision = s->work ? s->work->state.revision : 0;
   s->running = task;
@@ -1080,6 +1118,7 @@ static asngn_err submit_common(asngn_session *s, char *gated_msg,
   {
     asngn_err e = asngn_worker_submit(c, task);
     if (e != ASNGN_OK) {
+      asngn_project_release(c, task->project);
       os_rwlock_wrlock(&s->lock);
       s->busy = false;
       s->running = NULL;
@@ -1168,7 +1207,12 @@ static asngn_err more_common(asngn_session *s, asngn_token_fn token_fn,
     return asngn_seterr(s->ctx, ASNGN_ERR_INVALID,
                         "the last answer was not capped");
   if (msg == NULL) return ASNGN_ERR_NOMEM;
-  return submit_common(s, msg, NULL, true, false, token_fn, ud, stream_fn, ud,
+  asngn_submit_opts opts;
+  memset(&opts, 0, sizeof opts);
+  os_rwlock_rdlock(&s->lock);
+  opts.origin = s->last_origin;
+  os_rwlock_rdunlock(&s->lock);
+  return submit_common(s, msg, &opts, true, false, token_fn, ud, stream_fn, ud,
                        out);
 }
 
@@ -1201,6 +1245,9 @@ static asngn_err retry_common(asngn_session *s, asngn_token_fn token_fn,
   if (msg == NULL) return ASNGN_ERR_NOMEM;
   memset(&opts, 0, sizeof opts);
   opts.no_cache = 1;
+  os_rwlock_rdlock(&s->lock);
+  opts.origin = s->last_origin;
+  os_rwlock_rdunlock(&s->lock);
   return submit_common(s, msg, &opts, false, true, token_fn, ud, stream_fn, ud,
                        out);
 }

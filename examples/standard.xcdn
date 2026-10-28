@@ -1,0 +1,34 @@
+// Model size "standard": a graphics card with 8 GB.
+// asterism setup --tier standard writes this file as ~/asterism/config.xcdn.
+// Settings not listed here keep their default.
+//
+// Qwen3.5 9B answers on the graphics card; Qwen3.5 0.8B sorts the requests
+// and EmbeddingGemma indexes the memory on the processor.
+
+#asngn_config {
+  models: {
+    max_resident: 3,
+    pool: [
+      { id: "nano", path: "models/qwen3.5-0.8b-q8_0.gguf", ctx: 8192,
+        threads: 4, gpu_layers: 0 },
+      { id: "std", path: "models/qwen3.5-9b-q4_k_m.gguf", ctx: 32768,
+        threads: 8, gpu_layers: -1 },
+      { id: "embed", path: "models/embeddinggemma-300m-q8_0.gguf", ctx: 2048,
+        threads: 4, gpu_layers: 0, embedding: true, dim: 768,
+        query_prefix: "task: search result | query: ",
+        document_prefix: "title: none | text: " },
+    ],
+    roles: {
+      router: "nano",
+      planner: "std",
+      generator: "std",
+      compressor: "std",
+      adapter: "std",
+      judge: "std",
+      embedder: "embed",
+    },
+  },
+
+  // What the tools may do: astools.xcdn, written by asterism setup.
+  integration: { astools: { config: "astools.xcdn" } },
+}

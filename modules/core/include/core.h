@@ -93,6 +93,11 @@ void     core_sha256(const void *data, size_t len, uint8_t out[32]);
 core_err core_sha256_file(const char *path, uint8_t out[32]);
 /* Lowercase hex of the first n bytes (n <= 32); out needs 2n+1. */
 void     core_sha256_hex(const uint8_t hash[32], size_t n, char *out);
+/* HMAC-SHA256 (RFC 2104); any key length. */
+void     core_hmac_sha256(const void *key, size_t key_len, const void *data,
+                          size_t len, uint8_t out[32]);
+/* Compares n bytes without data-dependent early exit; true when equal. */
+bool     core_bytes_equal_ct(const void *a, const void *b, size_t n);
 
 /* ── UUID ─────────────────────────────────────────────────────────────── */
 
@@ -185,6 +190,7 @@ FILE    *os_store_lock(const char *path);
 /* Create path and missing parents; an existing directory is fine. */
 core_err os_mkdir_p(const char *path);
 int      os_file_exists(const char *path); /* 1 = yes, any type */
+int      os_is_dir(const char *path);      /* 1 = a directory (followed) */
 /* Whole file, NUL-terminated, free() it; out_len may be NULL. */
 core_err os_read_file(const char *path, char **out, size_t *out_len);
 /* Write a whole buffer (truncate). Pair with os_file_replace for atomicity. */
@@ -211,7 +217,7 @@ core_err os_realpath(const char *path, char **out);
 int64_t os_now_unix(void);      /* wall clock, unix seconds UTC */
 int64_t os_monotonic_ms(void);  /* monotonic milliseconds */
 void    os_sleep_ms(int ms);    /* real sleep, also without threads */
-void    os_random_bytes(void *buf, size_t n); /* CSPRNG, best effort fallback */
+void    os_random_bytes(void *buf, size_t n); /* CSPRNG; aborts without one */
 int     os_hardware_threads(void); /* >= 1 */
 /* Join with '/' (accepted by the Windows APIs used here); malloc'd. */
 char   *os_path_join(const char *a, const char *b);

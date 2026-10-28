@@ -750,36 +750,124 @@ static int tool_session_stats(server_state *st, const asmodel_json_value *args,
   return TOOL_OK;
 }
 
-static int tool_project_select(server_state *st, const asmodel_json_value *args,
+static asmodel_json_value *project_json(const asngn_project_info *p) {
+  asmodel_json_value *o = asmodel_json_object();
+  int ok = o != NULL;
+  ok &= asmodel_json_object_set(o, "name", asmodel_json_string(p->name)) == 0;
+  ok &= asmodel_json_object_set(o, "path", asmodel_json_string(p->path)) == 0;
+  ok &= asmodel_json_object_set(o, "created_at", asmodel_json_int(p->created_at)) == 0;
+  if (!ok) {
+    asmodel_json_free(o);
+    return NULL;
+  }
+  return o;
+}
+
+static int tool_project_list(server_state *st, const asmodel_json_value *args,
+                             asmodel_json_value **out, const char **msg) {
+  asngn_project_info *ps = NULL;
+  size_t n = 0, i;
+  asngn_err e;
+  asmodel_json_value *o, *arr;
+  int ok;
+  (void)args;
+  (void)msg;
+
+  e = asngn_projects_list(st->ctx, &ps, &n);
+  if (e != ASNGN_OK) return engine_fail(st, e, out);
+  o = asmodel_json_object();
+  arr = asmodel_json_array();
+  ok = o != NULL && arr != NULL;
+  for (i = 0; ok && i < n; i++)
+    ok = asmodel_json_array_push(arr, project_json(&ps[i])) == 0;
+  asngn_free(ps);
+  if (ok) {
+    ok = asmodel_json_object_set(o, "projects", arr) == 0;
+    arr = NULL;
+  }
+  if (!ok) {
+    asmodel_json_free(arr);
+    asmodel_json_free(o);
+    return TOOL_OOM;
+  }
+  *out = o;
+  return TOOL_OK;
+}
+
+static int tool_project_create(server_state *st, const asmodel_json_value *args,
                                asmodel_json_value **out, const char **msg) {
-  const asmodel_json_value *sv = asmodel_json_object_get(args, "slug");
-  const char *slug = NULL, *session = NULL;
+  const char *name = NULL, *path = NULL;
+  asngn_project_info p;
+  asngn_err e;
+
+  if (arg_str(args, "name", &name, msg) != 1)
+    BADP("project_create: \"name\" must be a string");
+  if (arg_str(args, "path", &path, msg) < 0)
+    BADP("project_create: \"path\" must be a string");
+  e = asngn_project_add(st->ctx, name, path, &p);
+  if (e != ASNGN_OK) return engine_fail(st, e, out);
+  *out = project_json(&p);
+  return *out != NULL ? TOOL_OK : TOOL_OOM;
+}
+
+static int tool_project_remove(server_state *st, const asmodel_json_value *args,
+                               asmodel_json_value **out, const char **msg) {
+  const char *name = NULL;
+  asngn_project_info p;
+  asngn_err e;
+
+  if (arg_str(args, "name", &name, msg) != 1)
+    BADP("project_remove: \"name\" must be a string");
+  e = asngn_project_get(st->ctx, name, &p);
+  if (e == ASNGN_OK) e = asngn_project_remove(st->ctx, name);
+  if (e != ASNGN_OK) return engine_fail(st, e, out);
+  /* the folder is never touched */
+  *out = project_json(&p);
+  return *out != NULL ? TOOL_OK : TOOL_OOM;
+}
+
+static int tool_project_bind(server_state *st, const asmodel_json_value *args,
+                             asmodel_json_value **out, const char **msg) {
+  const asmodel_json_value *pv = asmodel_json_object_get(args, "project");
+  const char *name = NULL, *session = NULL;
   asngn_session *s = NULL;
+  asngn_workspace_info w;
+  asngn_usage_mode mode;
+  asngn_security_profile profile;
   asngn_err e;
   asmodel_json_value *o;
   int rc, ok;
 
-  if (!sv)
-    BADP("project_select: \"slug\" is required (string or null)");
-  if (asmodel_json_typeof(sv) == ASMODEL_JSON_STRING) {
-    if (asmodel_json_string_length(sv) != strlen(asmodel_json_string_value(sv)))
+  if (!pv)
+    BADP("project_bind: \"project\" is required (string or null)");
+  if (asmodel_json_typeof(pv) == ASMODEL_JSON_STRING) {
+    if (asmodel_json_string_length(pv) != strlen(asmodel_json_string_value(pv)))
       BADP("string must not contain NUL");
-    slug = asmodel_json_string_value(sv);
-  } else if (asmodel_json_typeof(sv) != ASMODEL_JSON_NULL) {
-    BADP("project_select: \"slug\" must be a string or null");
+    name = asmodel_json_string_value(pv);
+  } else if (asmodel_json_typeof(pv) != ASMODEL_JSON_NULL) {
+    BADP("project_bind: \"project\" must be a string or null");
   }
   if (arg_str(args, "session", &session, msg) < 0)
-    BADP("project_select: \"session\" must be a string");
+    BADP("project_bind: \"session\" must be a string");
 
   rc = state_session(st, session, &s, out);
   if (rc != TOOL_OK) return rc;
-  e = asngn_session_project(s, slug);
+  e = asngn_session_project(s, name);
+  if (e == ASNGN_ERR_INVALID)
+    return fail_payload(out, asngn_err_name(e), "invalid project name");
+  if (e == ASNGN_ERR_BUSY)
+    return fail_payload(out, asngn_err_name(e), "a turn is running");
+  if (e == ASNGN_OK) e = asngn_session_get_mode(s, &mode, &profile);
+  if (e == ASNGN_OK) e = asngn_session_workspace(s, &w);
   if (e != ASNGN_OK) return engine_fail(st, e, out);
 
   o = asmodel_json_object();
   ok = (o != NULL);
-  ok &= asmodel_json_object_set(o, "ok", asmodel_json_bool(1)) == 0;
-  ok &= asmodel_json_object_set(o, "active", slug ? asmodel_json_string(slug) : asmodel_json_null()) == 0;
+  ok &= asmodel_json_object_set(o, "project", name ? asmodel_json_string(name) : asmodel_json_null()) == 0;
+  ok &= asmodel_json_object_set(o, "workspace", asmodel_json_string(w.canonical_root)) == 0;
+  ok &= asmodel_json_object_set(o, "mode", asmodel_json_string(asngn_usage_mode_name(mode))) == 0;
+  ok &= asmodel_json_object_set(o, "security_profile",
+                      asmodel_json_string(asngn_security_profile_name(profile))) == 0;
   if (!ok) {
     asmodel_json_free(o);
     return TOOL_OOM;
@@ -923,14 +1011,24 @@ static int tool_engine_consumption(server_state *st, const asmodel_json_value *a
 static int tool_workspace_info(server_state *st, const asmodel_json_value *args,
                                asmodel_json_value **out, const char **msg) {
   asngn_workspace_info w;
+  asngn_session_peek_info pi;
+  asngn_session *s = NULL;
+  const char *session = NULL;
   asmodel_json_value *o;
-  int ok;
+  int ok, rc;
   asngn_err e;
-  (void)args; (void)msg;
+  if (arg_str(args, "session", &session, msg) < 0)
+    BADP("workspace_info: \"session\" must be a string");
+  rc = state_session(st, session, &s, out);
+  if (rc != TOOL_OK) return rc;
   memset(&w, 0, sizeof w);
-  e = asngn_workspace_get(st->ctx, &w);
+  e = asngn_session_workspace(s, &w);
   if (e != ASNGN_OK) return engine_fail(st, e, out);
+  if (asngn_session_peek(st->ctx, asngn_session_slug(s), &pi) != ASNGN_OK)
+    pi.project[0] = '\0';
   o = asmodel_json_object(); ok = o != NULL;
+  ok &= asmodel_json_object_set(o, "session", asmodel_json_string(asngn_session_slug(s))) == 0;
+  ok &= asmodel_json_object_set(o, "project", pi.project[0] ? asmodel_json_string(pi.project) : asmodel_json_null()) == 0;
   ok &= asmodel_json_object_set(o, "canonical_root", asmodel_json_string(w.canonical_root)) == 0;
   ok &= asmodel_json_object_set(o, "repository_root", asmodel_json_string(w.repository_root)) == 0;
   ok &= asmodel_json_object_set(o, "head", asmodel_json_string(w.head)) == 0;
@@ -996,9 +1094,12 @@ static const tool_def TOOLS[] = {
      "\"required\":[\"session\",\"turn\",\"signal\"]}",
      tool_agent_feedback},
     {"workspace_info",
-     "Return the selected canonical workspace, repository identity, build "
-     "adapter and live content fingerprint.",
-     "{\"type\":\"object\",\"properties\":{}}",
+     "Return a session's canonical workspace (its project's folder when "
+     "bound), repository identity, build adapter and live content "
+     "fingerprint.",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"session\":{\"type\":\"string\",\"description\":\"Session slug "
+     "(default \\\"main\\\")\"}}}",
      tool_workspace_info},
     {"session_list",
      "List known session slugs.",
@@ -1034,16 +1135,37 @@ static const tool_def TOOLS[] = {
      "slug\"}},"
      "\"required\":[\"session\"]}",
      tool_session_stats},
-    {"project_select",
-     "Select the asper project for a session (proxied to asper); null "
-     "deselects.",
+    {"project_list",
+     "List registered projects: name, folder and creation time.",
+     "{\"type\":\"object\",\"properties\":{}}",
+     tool_project_list},
+    {"project_create",
+     "Register a project: a new folder under the engine root's projects/, "
+     "or an existing folder (system folders and the home itself are "
+     "refused).",
      "{\"type\":\"object\",\"properties\":{"
-     "\"slug\":{\"type\":[\"string\",\"null\"],\"description\":"
-     "\"Project slug to activate; null deselects\"},"
+     "\"name\":{\"type\":\"string\",\"description\":\"Project name: "
+     "lowercase letters, digits and dashes, up to 40\"},"
+     "\"path\":{\"type\":\"string\",\"description\":\"Existing absolute "
+     "or ~/ folder; omitted creates projects/<name>\"}},"
+     "\"required\":[\"name\"]}",
+     tool_project_create},
+    {"project_remove",
+     "Remove a project from the list. Its folder is left untouched.",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
+     tool_project_remove},
+    {"project_bind",
+     "Make a session work in a project's folder (and its memory); a chat "
+     "session switches to coding. null unbinds. A name that is not "
+     "registered selects a memory-only project.",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"project\":{\"type\":[\"string\",\"null\"],\"description\":"
+     "\"Project name; null unbinds\"},"
      "\"session\":{\"type\":\"string\",\"description\":\"Session slug "
      "(default \\\"main\\\")\"}},"
-     "\"required\":[\"slug\"]}",
-     tool_project_select},
+     "\"required\":[\"project\"]}",
+     tool_project_bind},
     {"cache_stats",
      "Semantic-cache hit / adapt / miss counters.",
      "{\"type\":\"object\",\"properties\":{}}",

@@ -5,6 +5,51 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#define PATH_SEP ';'
+#else
+#define PATH_SEP ':'
+#endif
+
+/* An executable named `name` on PATH, or NULL. */
+static char *find_on_path(const char *name) {
+  const char *path = getenv("PATH");
+  while (path && *path) {
+    const char *end = strchr(path, PATH_SEP);
+    size_t n = end ? (size_t)(end - path) : strlen(path);
+    if (n) {
+      char *dir = core_strndup(path, n);
+      char *candidate = dir ? os_path_join(dir, name) : NULL;
+      free(dir);
+      if (candidate && os_file_exists(candidate)) return candidate;
+      free(candidate);
+    }
+    path = end ? end + 1 : NULL;
+  }
+  return NULL;
+}
+
+/* The subscriptions asterism can use, and where each stands with its
+ * vendor's terms. Delegates are optional: their absence is not an error. */
+static asngn_err subscriptions(core_buf *report) {
+  static const struct { const char *bin, *label, *terms; } delegates[] = {
+    {"codex", "Codex CLI (ChatGPT plan)",
+     "allowed with your own ChatGPT login; asterism never reads its credentials"},
+    {"claude", "Claude Code CLI (Claude plan)",
+     "the unmodified CLI with your own login; Anthropic has not said whether a "
+     "program driving it counts as a third-party harness"},
+  };
+  asngn_err e = asngn_buf_appends(report, "Delegates (tool package \"delegate\"):\n");
+  for (size_t i = 0; e == ASNGN_OK && i < sizeof delegates / sizeof delegates[0]; i++) {
+    char *where = find_on_path(delegates[i].bin);
+    e = asngn_buf_printf(report, "  %s: %s%s; terms: %s\n", delegates[i].label,
+                         where ? "found at " : "not on PATH",
+                         where ? where : "", delegates[i].terms);
+    free(where);
+  }
+  return e;
+}
+
 asngn_err asngn_diagnose(const asngn_open_params *params, char **out) {
   asngn_ctx *c;
   core_buf report;
@@ -42,7 +87,22 @@ asngn_err asngn_diagnose(const asngn_open_params *params, char **out) {
   if (params->config_path && !configured) ready = false;
   for (size_t i = 0; e == ASNGN_OK && i < c->cfg.pool_n; i++) {
     asngn_pool_entry *m = &c->cfg.pool[i];
-    if (m->backend == ASMODEL_BACKEND_OPENAI) {
+    if (m->backend == ASMODEL_BACKEND_OPENAI && m->remote_provider == ASMODEL_REMOTE_CHATGPT) {
+      char *auth = os_path_is_abs(m->auth_file) ? core_strdup(m->auth_file)
+                                                : os_path_join(root, m->auth_file);
+      asmodel_chatgpt_status st;
+      memset(&st, 0, sizeof st);
+      bool in = auth && asmodel_chatgpt_status_read(auth, &st) == ASMODEL_OK && st.logged_in;
+      if (!in) ready = false;
+      e = in ? asngn_buf_printf(&report,
+                                "Model %s: ChatGPT plan (%s%s%s); terms: Sign in with ChatGPT "
+                                "allows open-source and personal apps\n",
+                                m->id, st.email[0] ? st.email : "signed in",
+                                st.plan[0] ? ", " : "", st.plan)
+             : asngn_buf_printf(&report, "Model %s: ChatGPT plan not signed in; run: asterism login chatgpt\n",
+                                m->id);
+      free(auth);
+    } else if (m->backend == ASMODEL_BACKEND_OPENAI) {
       bool credential = !m->api_key_env || !m->api_key_env[0] ||
                          (getenv(m->api_key_env) && getenv(m->api_key_env)[0]);
       if (!credential) ready = false;
@@ -60,6 +120,16 @@ asngn_err asngn_diagnose(const asngn_open_params *params, char **out) {
       if (e == ASNGN_OK) e = asngn_buf_appends(&report, "Embedded backend absent: rebuild with ASTERISM_WITH_LLAMA=ON or configure a remote model.\n");
 #endif
     }
+  }
+  if (e == ASNGN_OK) e = subscriptions(&report);
+  if (e == ASNGN_OK) {
+    char *serve = os_path_join(root, "serve.xcdn"), *owner = os_path_join(root, "serve/state.xcdn");
+    if (serve && os_file_exists(serve))
+      e = asngn_buf_printf(&report, "Daemon: serve.xcdn present; %s\n",
+                           owner && os_file_exists(owner) ? "state present (see asterism serve pair)"
+                                                         : "not paired yet: asterism serve pair");
+    free(serve);
+    free(owner);
   }
   if (e == ASNGN_OK) e = asngn_buf_appends(&report, ready ? "Preflight: ready for runtime probes.\n" : "Preflight: action required.\n");
   if (e == ASNGN_OK && !ready) e = ASNGN_ERR_CONFIG;

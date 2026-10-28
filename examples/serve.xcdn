@@ -1,0 +1,37 @@
+// ~/asterism/serve.xcdn: the Telegram settings. asterism setup writes a short
+// one for you; this file shows every setting, and all of them are optional.
+// The bot token is never written here: setup keeps it in the vault.
+
+#serve {
+  telegram: {
+    token_secret: "telegram-token",   // asterism vault set telegram-token --tool serve
+    // token_env: "ASTERISM_TELEGRAM_TOKEN",
+    poll_timeout: r"PT50S",
+    topics: true,                     // /new opens one thread per task
+  },
+
+  // Voice notes: any command that turns {input} into text. It may write
+  // {output}<output_ext> or print the transcript on stdout.
+  speech: {
+    argv: ["whisper-cli", "-m", "/opt/models/ggml-large-v3-turbo.bin",
+           "-l", "auto", "-nt", "-otxt", "-of", "{output}", "-f", "{input}"],
+    output_ext: ".txt",
+  },
+
+  routines: { dir: "routines", tick: r"PT30S" },
+  downloads: { max_bytes: 20000000 },
+
+  // Stars: the first is the default and uses this engine root. The others
+  // get their own root (memory, tools, sessions, secrets) and, optionally,
+  // their own bot. In a thread of the main bot, /star <name> switches.
+  stars: [
+    { name: "default", mode: "chat", profile: "chat" },
+    {
+      name: "dev",
+      root: "stars/dev",               // relative to the engine root
+      mode: "coding",
+      profile: "coding-sandboxed",
+      identity: "You are Dev: you work on the owner's repositories and delegate large tasks to Codex or Claude Code.",
+    },
+  ],
+}

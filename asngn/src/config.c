@@ -176,6 +176,7 @@ void asngn_config_free(asngn_config *cfg) {
     free(cfg->pool[i].base_url);
     free(cfg->pool[i].remote_model);
     free(cfg->pool[i].api_key_env);
+    free(cfg->pool[i].auth_file);
   }
   free(cfg->tele_path);
   free(cfg->log_path);
@@ -494,7 +495,7 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
     const xcdn_node_t *en = xcdn_array_get(v, i);
     const xcdn_value_t *eo = en != NULL ? en->value : NULL;
     const char *id, *path, *backend_s, *base_url, *remote_model, *provider_s;
-    const char *api_key_env;
+    const char *api_key_env, *auth_file;
     int64_t ctx = 0, threads = 4, dim = 0, gpu_layers = -1;
     int64_t ram_mb = 0, vram_mb = 0;
     bool embedding = false, warm = true, kv_cache = true;
@@ -510,6 +511,9 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
     remote_model = asngn_xstr(asngn_xfield(eo, "model"));
     provider_s = asngn_xstr(asngn_xfield(eo, "provider"));
     api_key_env = asngn_xstr(asngn_xfield(eo, "api_key_env"));
+    auth_file = asngn_xstr(asngn_xfield(eo, "auth_file"));
+    if (asngn_xfield(eo, "auth_file") != NULL && (auth_file == NULL || !auth_file[0]))
+      goto bad_entry;
     if (provider_s != NULL) {
       if (strcmp(provider_s, "auto") == 0)
         remote_provider = ASMODEL_REMOTE_AUTO;
@@ -522,12 +526,25 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
         remote_provider = ASMODEL_REMOTE_LMSTUDIO;
       else if (strcmp(provider_s, "vllm") == 0)
         remote_provider = ASMODEL_REMOTE_VLLM;
+      else if (strcmp(provider_s, "chatgpt") == 0)
+        remote_provider = ASMODEL_REMOTE_CHATGPT;
       else goto bad_entry;
+    }
+    /* ChatGPT plan: always the HTTP backend; the public Responses endpoint and
+     * an engine-root credential file unless configured. */
+    if (remote_provider == ASMODEL_REMOTE_CHATGPT) {
+      if (backend_s == NULL) backend_s = "openai";
+      if (base_url == NULL) base_url = ASMODEL_CHATGPT_BASE_URL;
+      if (auth_file == NULL) auth_file = "auth/chatgpt.json";
+    } else if (auth_file != NULL) {
+      goto bad_entry; /* auth_file belongs to provider "chatgpt" only */
     }
     if (backend_s != NULL) {
       if (strcmp(backend_s, "openai") == 0) backend = ASMODEL_BACKEND_OPENAI;
       else if (strcmp(backend_s, "embedded") != 0) goto bad_entry;
     }
+    if (remote_provider == ASMODEL_REMOTE_CHATGPT && backend != ASMODEL_BACKEND_OPENAI)
+      goto bad_entry;
     if (id == NULL || id[0] == '\0' || strlen(id) >= 32 ||
         (backend == ASMODEL_BACKEND_EMBEDDED &&
          (path == NULL || path[0] == '\0')) ||
@@ -581,15 +598,18 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
     fresh[i].base_url = base_url ? cfg_dup(base_url) : NULL;
     fresh[i].remote_model = remote_model ? cfg_dup(remote_model) : NULL;
     fresh[i].api_key_env = api_key_env ? cfg_dup(api_key_env) : NULL;
+    fresh[i].auth_file = auth_file ? cfg_dup(auth_file) : NULL;
     fresh[i].remote_provider = remote_provider;
     fresh[i].ram_mb = (size_t)ram_mb; fresh[i].vram_mb = (size_t)vram_mb;
     fresh[i].warm = warm; fresh[i].kv_cache = kv_cache;
     if (fresh[i].path == NULL || (base_url && !fresh[i].base_url) ||
         (remote_model && !fresh[i].remote_model) ||
-        (api_key_env && !fresh[i].api_key_env)) {
+        (api_key_env && !fresh[i].api_key_env) ||
+        (auth_file && !fresh[i].auth_file)) {
       for (j = 0; j <= i; j++) {
         free(fresh[j].path); free(fresh[j].base_url);
         free(fresh[j].remote_model); free(fresh[j].api_key_env);
+        free(fresh[j].auth_file);
       }
       return ASNGN_ERR_NOMEM;
     }
@@ -597,6 +617,7 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
   for (i = 0; i < ASNGN_MAX_POOL; i++) {
     free(cfg->pool[i].path); free(cfg->pool[i].base_url);
     free(cfg->pool[i].remote_model); free(cfg->pool[i].api_key_env);
+    free(cfg->pool[i].auth_file);
   }
   memcpy(cfg->pool, fresh, sizeof fresh);
   cfg->pool_n = n;
@@ -605,6 +626,7 @@ bad_entry:
   for (i = 0; i < ASNGN_MAX_POOL; i++) {
     free(fresh[i].path); free(fresh[i].base_url);
     free(fresh[i].remote_model); free(fresh[i].api_key_env);
+    free(fresh[i].auth_file);
   }
   return asngn_seterr(c, ASNGN_ERR_CONFIG,
                       "config: models.pool: invalid entry (need unique id, "

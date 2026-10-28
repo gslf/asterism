@@ -175,3 +175,43 @@ void core_sha256_hex(const uint8_t hash[32], size_t n, char *out) {
   }
   out[n * 2] = '\0';
 }
+
+void core_hmac_sha256(const void *key, size_t key_len, const void *data,
+                      size_t len, uint8_t out[32]) {
+  uint8_t block[64], inner[32];
+  core_sha256_ctx ctx;
+  size_t i;
+  memset(block, 0, sizeof block);
+  if (key_len > sizeof block)
+    core_sha256(key, key_len, block);
+  else if (key_len)
+    memcpy(block, key, key_len);
+  for (i = 0; i < sizeof block; i++) block[i] ^= 0x36;
+  core_sha256_init(&ctx);
+  core_sha256_update(&ctx, block, sizeof block);
+  core_sha256_update(&ctx, data, len);
+  core_sha256_final(&ctx, inner);
+  for (i = 0; i < sizeof block; i++) block[i] ^= 0x36 ^ 0x5c;
+  core_sha256_init(&ctx);
+  core_sha256_update(&ctx, block, sizeof block);
+  core_sha256_update(&ctx, inner, sizeof inner);
+  core_sha256_final(&ctx, out);
+  /* Volatile stores so the key material is wiped even after inlining. */
+  {
+    volatile uint8_t *w = block;
+    for (i = 0; i < sizeof block; i++) w[i] = 0;
+    w = inner;
+    for (i = 0; i < sizeof inner; i++) w[i] = 0;
+    w = (volatile uint8_t *)&ctx;
+    for (i = 0; i < sizeof ctx; i++) w[i] = 0;
+  }
+}
+
+bool core_bytes_equal_ct(const void *a, const void *b, size_t n) {
+  const volatile uint8_t *x = (const volatile uint8_t *)a;
+  const volatile uint8_t *y = (const volatile uint8_t *)b;
+  uint8_t diff = 0;
+  size_t i;
+  for (i = 0; i < n; i++) diff |= (uint8_t)(x[i] ^ y[i]);
+  return diff == 0;
+}

@@ -169,17 +169,48 @@ static asngn_err mod_open_asper(asngn_ctx *c) {
   return ASNGN_OK;
 }
 
+/* Tool scratch for any workspace other than a session's private one (a
+ * project, a fixed folder): under cache/scratch/, so a user's folder never
+ * gains .astools/tmp. NULL keeps the configured default; *oom on allocation
+ * failure. */
+static char *mod_scratch_for(asngn_ctx *c, const char *workspace, bool *oom) {
+  char *own = asngn_realpath(c->sessions_dir), *dir = NULL, *out = NULL;
+  uint8_t hash[32];
+  char hex[17];
+  size_t n;
+  *oom = false;
+  if (own != NULL) {
+    n = strlen(own);
+    if (strncmp(workspace, own, n) == 0 &&
+        (workspace[n] == '\0' || workspace[n] == '/' || workspace[n] == '\\')) {
+      free(own);
+      return NULL;
+    }
+    free(own);
+  }
+  core_sha256(workspace, strlen(workspace), hash);
+  core_sha256_hex(hash, 8, hex);
+  dir = os_path_join(c->cache_dir ? c->cache_dir : c->root, "scratch");
+  if (dir != NULL) out = os_path_join(dir, hex);
+  *oom = out == NULL;
+  free(dir);
+  return out;
+}
+
 static asngn_err mod_open_astools_at(asngn_ctx *c, const char *workspace) {
-  char *root, *work, *conf = NULL;
+  char *root, *work, *conf = NULL, *scratch;
+  bool oom;
   asngn_err e;
 
   root = mod_join(c, c->cfg.astools_root);
   work = core_strdup(workspace);
   if (c->cfg.astools_config) conf = mod_join(c, c->cfg.astools_config);
-  if (!root || !work || (c->cfg.astools_config && !conf)) {
+  scratch = mod_scratch_for(c, workspace, &oom);
+  if (!root || !work || (c->cfg.astools_config && !conf) || oom) {
     free(root);
     free(work);
     free(conf);
+    free(scratch);
     return asngn_seterr(c, ASNGN_ERR_NOMEM, "modules: out of memory");
   }
 
@@ -203,6 +234,7 @@ static asngn_err mod_open_astools_at(asngn_ctx *c, const char *workspace) {
     p.registry_paths = conf != NULL ? NULL : regs;
     p.config_path = conf;
     p.workspace_root = work;
+    p.scratch_root = scratch;
     ae = astools_open(&p, &c->astools);
     if (ae != ASTOOLS_OK) {
       c->astools = NULL;
@@ -217,6 +249,7 @@ static asngn_err mod_open_astools_at(asngn_ctx *c, const char *workspace) {
         free(root);
         free(work);
         free(conf);
+        free(scratch);
         return asngn_seterr(c, ASNGN_ERR_NOMEM,
                             "modules: out of memory");
       }
@@ -230,6 +263,7 @@ static asngn_err mod_open_astools_at(asngn_ctx *c, const char *workspace) {
   free(root);
   free(work);
   free(conf);
+  free(scratch);
   return ASNGN_OK;
 }
 
@@ -388,6 +422,21 @@ asngn_err asngn_modules_annotations(asngn_ctx *c, const char *ref,
   snprintf(note.cmd, sizeof(note.cmd), "%s", cmd);
   ver = asngn_xstr(asngn_xfield(obj, "version"));
   if (ver) snprintf(note.version, sizeof(note.version), "%s", ver);
+  /* Package-level grants requested by the manifest: any network request
+   * (true, or a non-empty host list) makes the tool a network egress. */
+  {
+    const xcdn_value_t *perm = asngn_xfield(obj, "permissions");
+    const xcdn_value_t *net = perm && perm->type == XCDN_VAL_OBJECT
+                                  ? asngn_xfield(perm, "net") : NULL;
+    bool b = false;
+    if (net && asngn_xbool(net, &b)) note.network = b;
+    else if (net && net->type == XCDN_VAL_ARRAY) note.network = xcdn_array_len(net) > 0;
+    else if (net && net->type == XCDN_VAL_OBJECT) note.network = true;
+  }
+  {
+    const char *id = asngn_xstr(asngn_xfield(obj, "id"));
+    note.delegate = id && !strcmp(id, "delegate");
+  }
 
   cmds = asngn_xfield(obj, "commands");
   if (!cmds || cmds->type != XCDN_VAL_ARRAY) {
@@ -461,6 +510,16 @@ asngn_err asngn_modules_event_append(asngn_ctx *c, const char *scope,
                                       const char *text,
                                       const char *object_ref, bool pinned,
                                       char out_id[37]) {
+  return asngn_modules_event_append_from(c, scope, kind, text, object_ref,
+                                         pinned, ASNGN_ORIGIN_HOST, out_id);
+}
+
+asngn_err asngn_modules_event_append_from(asngn_ctx *c, const char *scope,
+                                           asngn_memory_kind kind,
+                                           const char *text,
+                                           const char *object_ref, bool pinned,
+                                           asngn_origin origin,
+                                           char out_id[37]) {
   asper_event_input in;
   asper_err ae;
   if (!c || !scope || !text) return ASNGN_ERR_INVALID;
@@ -471,6 +530,8 @@ asngn_err asngn_modules_event_append(asngn_ctx *c, const char *scope,
   in.text = text;
   in.object_ref = object_ref;
   in.pinned = pinned ? 1 : 0;
+  /* asngn_origin mirrors asper_origin value for value. */
+  in.origin = (asper_origin)origin;
   ae = asper_event_append(c->asper, &in, out_id);
   return mod_asper_err(c, ae, "event_append");
 }

@@ -1,5 +1,5 @@
 // Copy beside config.xcdn, then copy the assembled standard packages into
-// <engine-root>/tools/.
+// <engine-root>/tools/. Relative registry paths are resolved beside this file.
 
 #astools_config {
   registry: {
@@ -13,12 +13,22 @@
     pinning: "off",
   },
   workspace: { root: "." },
+  // The delegate package (Codex CLI, Claude Code CLI) needs the basic level
+  // and the directories of the CLIs you installed and logged in to yourself
+  // (plus node's, for npm installs). Replace or remove these two lines.
+  sandbox: {
+    default_level: "basic",
+    executable_paths: ["/usr/local/bin"], // add the directory of claude and codex
+  },
   grants: {
     workspace_access: "read-write",
     tools: [
       { tool: "proc", proc: true },
       { tool: "git", proc: true },
       { tool: "project", proc: true },
+      // delegate.claude / delegate.codex run read-only; the -edit commands
+      // always ask for approval. Their output is untrusted in the turn.
+      { tool: "delegate", proc: true, net: true, env: ["LANG"] },
     ],
   },
 }

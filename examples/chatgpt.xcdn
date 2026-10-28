@@ -1,0 +1,72 @@
+// ChatGPT Plus or Pro writes the answers; a small local model does the rest.
+//
+// 1. asterism login chatgpt   (it lists the models your plan offers)
+// 2. copy this file to ~/asterism/config.xcdn and put one of them in `model`
+// 3. asterism stop, then asterism start
+//
+// To keep your current models instead, see "Use your subscriptions" in the
+// README. Usage limits: https://chatgpt.com/settings/usage
+
+#asngn_config {
+  engine: {
+    profile: "coding",
+    base_prompt: """You are a professional software-engineering assistant.
+Prioritize correctness, completeness, maintainability, and verified outcomes.
+Inspect relevant workspace context before changing it, use tools to perform
+requested work, run applicable builds or tests, and report evidence honestly.
+Token limits prevent waste; they never justify partial work.""",
+  },
+
+  models: {
+    max_resident: 2,
+    pool: [
+      { id: "light", path: "models/qwen3.5-4b-q4_k_m.gguf", ctx: 16384,
+        threads: 6, gpu_layers: -1, warm: true },
+      {
+        id: "plan",
+        provider: "chatgpt",          // implies backend "openai"
+        model: "REPLACE_WITH_A_LISTED_MODEL",
+        // Defaults, shown for reference:
+        // base_url: "https://api.openai.com/v1",
+        // auth_file: "auth/chatgpt.json",  // relative to the engine root
+        ctx: 131072,
+        warm: false,
+      },
+    ],
+    roles: {
+      router: "light",
+      planner: "plan",
+      generator: "plan",
+      compressor: "light",
+      adapter: "light",
+      judge: "light",
+      embedder: "",
+    },
+  },
+
+  detail: { terse_tokens: 1024, normal_tokens: 4096, rich_tokens: 10240 },
+  context: {
+    memory_checkpoint_tokens: 3072,
+    memory_history_tokens: 8192,
+    working_tokens: 6144,
+    safety_margin: 512,
+    digest_threshold_chars: 32768,
+    digest_tokens: 2048,
+  },
+  routing: { classifier: "model", max_escalations: 1 },
+  validation: { judge: "off" },
+  cache: { enable: false, tool_cache: true },
+  safety: { stall_timeout: "PT0S", turn_deadline: "PT0S" },
+
+  integration: {
+    asper: { enable: true, root: "memory" },
+    astools: {
+      enable: true,
+      root: "tools",
+      config: "astools.xcdn",
+      workspace: "session",
+    },
+  },
+  telemetry: { path: "telemetry/telemetry.xcdn" },
+  logging: { path: "asngn.log", level: "info" },
+}

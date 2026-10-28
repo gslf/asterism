@@ -1083,6 +1083,20 @@ astools_err astools_config_load(const char *path, bool explicit_path,
     free(cfg->config_dir);
     cfg->config_dir = dir;
   }
+  /* A relative registry root means "beside this config file", not the
+   * process cwd: a service started from "/" must load the same tools as a
+   * shell started in the engine root. */
+  for (i = 0; i < cfg->reg_paths_len; i++) {
+    char *p = cfg->reg_paths[i].path;
+    if (!p || os_path_is_abs(p) || !cfg->config_dir[0]) continue;
+    char *joined = os_path_join(cfg->config_dir, p);
+    if (!joined) {
+      e = cfg_oom(err_msg);
+      goto out;
+    }
+    free(p);
+    cfg->reg_paths[i].path = joined;
+  }
   xcdn_document_free(doc);
   return prepend_env_paths(cfg, err_msg);
 

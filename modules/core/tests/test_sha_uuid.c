@@ -36,6 +36,33 @@ TEST(sha256_streaming_matches_one_shot) {
       "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
 }
 
+TEST(hmac_sha256_rfc4231_vectors) {
+  uint8_t key[131], mac[32];
+  char hex[65];
+  memset(key, 0x0b, 20);
+  core_hmac_sha256(key, 20, "Hi There", 8, mac);
+  core_sha256_hex(mac, 32, hex);
+  ASSERT_EQ_STR(hex,
+      "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+  core_hmac_sha256("Jefe", 4, "what do ya want for nothing?", 28, mac);
+  core_sha256_hex(mac, 32, hex);
+  ASSERT_EQ_STR(hex,
+      "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+  /* Test case 6: a key longer than the block is hashed first. */
+  memset(key, 0xaa, sizeof key);
+  core_hmac_sha256(key, sizeof key,
+      "Test Using Larger Than Block-Size Key - Hash Key First", 54, mac);
+  core_sha256_hex(mac, 32, hex);
+  ASSERT_EQ_STR(hex,
+      "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+}
+
+TEST(bytes_equal_ct) {
+  ASSERT_TRUE(core_bytes_equal_ct("abcd", "abcd", 4));
+  ASSERT_TRUE(!core_bytes_equal_ct("abcd", "abce", 4));
+  ASSERT_TRUE(core_bytes_equal_ct("", "", 0));
+}
+
 TEST(sha256_hex_prefix) {
   uint8_t hash[32];
   char hex[9];
@@ -151,7 +178,9 @@ TEST(sha256_million_a) {
 TEST_LIST = {
     TEST_ENTRY(sha256_fips_vectors),
     TEST_ENTRY(sha256_streaming_matches_one_shot),
-    TEST_ENTRY(sha256_hex_prefix),
+    TEST_ENTRY(hmac_sha256_rfc4231_vectors),
+  TEST_ENTRY(bytes_equal_ct),
+  TEST_ENTRY(sha256_hex_prefix),
     TEST_ENTRY(sha256_file_matches_buffer),
     TEST_ENTRY(sha256_file_missing_errors),
     TEST_ENTRY(uuid_v4_shape),

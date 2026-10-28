@@ -15,6 +15,17 @@
  * so long individual llama_decode calls abort early too (CPU backend
  * only, per llama.h).
  *
+ * Prompt reuse (kv_cache): the cache holds up to MLL_SLOTS prompts, one
+ * llama sequence each, so a caller that alternates prompts on one model
+ * (one per role) keeps all of them. A call picks the sequence its prompt
+ * continues (see mll_slot_pick), keeps the longest token prefix shared
+ * with that sequence's last prompt and evaluates only the rest. Attention
+ * caches drop the stale suffix in place. Recurrent and hybrid models
+ * (Mamba, Qwen3.5, ...) hold a running state that cannot be cut back to a
+ * token, so prompt evaluation snapshots that state at chunk boundaries and
+ * where the next change is likely (see mll_ckpt_marks); the next call
+ * restores the longest snapshot inside the shared prefix.
+ *
  * Thread model: the manager serializes calls per provider; nothing here
  * assumes more than one call in flight. count_tokens touches only the
  * vocab and is thread-safe.
@@ -122,6 +133,34 @@ static void mll_backend_init(void) {
 #define MLL_N_BATCH 512   /* prompt evaluation chunk size (generative)   */
 #define MLL_PENALTY_LAST_N 64 /* repeat-penalty window (tokens)          */
 #define MLL_EMBED_CTX 512 /* default embedding window when cfg->ctx <= 0 */
+#define MLL_SLOTS 4       /* prompts kept per generative model           */
+#define MLL_CKPT_MAX 8    /* recurrent-state snapshots kept per slot     */
+#define MLL_CKPT_BYTES ((size_t)512 << 20) /* and their bytes across
+                           * slots; the newest is always kept
+                           * (Qwen3.5-4B: 50 MiB each)                   */
+#define MLL_CKPT_MARGIN 4 /* tokens a snapshot stays before a predicted
+                           * change: tokenizers merge across boundaries  */
+#define MLL_RESUME_LEN 16 /* tokens that identify a resumed continuation */
+
+/* Recurrent-state snapshot taken after the first n prompt tokens. */
+typedef struct {
+  int32_t n;
+  uint8_t *data;
+  size_t size;
+} mll_ckpt;
+
+/* One sequence of the shared cache (its index is the llama seq_id): the
+ * last prompt it evaluated, the positions it still holds and, for
+ * recurrent/hybrid memory, snapshots sorted by n, each a prefix of prompt
+ * whose attention entries are still in the cache. */
+typedef struct {
+  llama_token *prompt; /* NULL: the sequence is empty                    */
+  int32_t prompt_n;
+  int32_t n_mem;       /* positions held: the prompt and decoded output  */
+  uint64_t used;       /* call count at last use                         */
+  mll_ckpt ckpt[MLL_CKPT_MAX];
+  int n_ckpt;
+} mll_slot;
 
 typedef struct {
   char id[ASMODEL_ID_MAX];    /* tokenizer identity: the model itself     */
@@ -135,8 +174,13 @@ typedef struct {
   bool embedding;
   bool encoder_only;
   bool kv_cache;
-  llama_token *cached_prompt;
-  int32_t cached_prompt_n;
+  bool needs_ckpt;            /* recurrent/hybrid memory: reuse restores
+                               * snapshots                               */
+  mll_slot slot[MLL_SLOTS];   /* kv_cache only                           */
+  int n_slots;
+  uint64_t calls;
+  struct llama_batch batch;   /* generative: n_batch tokens, one sequence
+                               * each                                    */
   /* Per-call cancel pointer for the ggml abort callback: installed at
    * the top of generate() and cleared on exit, guarded by cancel_mu
    * because the ggml worker threads read it mid-decode. */
@@ -262,9 +306,235 @@ static asmodel_err mll_apply_template(const char *tmpl, const asmodel_input *inp
   int32_t got = asmodel_llg_chat_apply_template(tmpl,messages,input->count,true,buf,need+1);
   if (got < 0 || got > need) { free(buf); goto done; }
   buf[got] = 0; *out = buf; e = ASMODEL_OK;
+  /* Hybrid-thinking templates (Qwen3, Qwen3.5) render enable_thinking=false
+   * as an empty think block after the assistant header; the C renderer has
+   * no such switch, so emit what the model's own template would. This is the
+   * model's documented default, not a reasoning-off guarantee: constrained
+   * passes keep the grammar as their guarantee. */
+  if (tmpl && strstr(tmpl, "enable_thinking")) {
+    static const char empty_think[] = "<think>\n\n</think>\n\n";
+    char *grown = realloc(buf, (size_t)got + sizeof empty_think);
+    if (!grown) { free(buf); *out = NULL; e = ASMODEL_ERR_NOMEM; goto done; }
+    memcpy(grown + got, empty_think, sizeof empty_think);
+    *out = grown;
+  }
 done:
   for (size_t i = 0; i < input->count; i++) free(content[i]);
   return e;
+}
+
+/* ---- prompt reuse ------------------------------------------------------- */
+
+static void mll_ckpt_drop_from(mll_slot *s, int first) {
+  for (int k = first; k < s->n_ckpt; k++) free(s->ckpt[k].data);
+  if (first < s->n_ckpt) s->n_ckpt = first;
+}
+
+static void mll_ckpt_drop_first(mll_slot *s) {
+  free(s->ckpt[0].data);
+  s->n_ckpt--;
+  memmove(s->ckpt, s->ckpt + 1, (size_t)s->n_ckpt * sizeof s->ckpt[0]);
+}
+
+/* Empty sequence k: its cache entries, prompt record and snapshots. */
+static void mll_slot_clear(mll_ud *u, int k) {
+  mll_slot *s = &u->slot[k];
+  llama_memory_seq_rm(llama_get_memory(u->lctx), k, -1, -1);
+  free(s->prompt);
+  s->prompt = NULL;
+  s->prompt_n = 0;
+  s->n_mem = 0;
+  mll_ckpt_drop_from(s, 0);
+}
+
+static int32_t mll_common(const llama_token *a, int32_t na, const llama_token *b, int32_t nb) {
+  int32_t n = 0;
+  while (n < na && n < nb && a[n] == b[n]) n++;
+  return n;
+}
+
+/* Tokens a prompt sharing the first n tokens of sequence s can start from:
+ * all of them in an attention cache, the longest snapshot within them in
+ * recurrent memory. */
+static int32_t mll_slot_reusable(const mll_ud *u, const mll_slot *s, int32_t n) {
+  int c = s->n_ckpt;
+  if (!u->needs_ckpt) return n;
+  while (c > 0 && s->ckpt[c - 1].n > n) c--;
+  return c > 0 ? s->ckpt[c - 1].n : 0;
+}
+
+/* Plan a prompt's sequence. Its start comes from the sequence holding the
+ * longest reusable prefix (*src, -1 if none; *common tokens shared). The
+ * call continues there when it keeps at least half of that sequence's
+ * prompt, as a prompt rebuilt step by step does; otherwise the prefix is
+ * copied to an empty or the least recently used sequence (mll_slot_fork),
+ * so a prompt that shares only a system prompt with another role's leaves
+ * that role's sequence intact. With nothing reusable, a sequence the prompt
+ * continues is overwritten before any other. Returns the sequence. */
+static int mll_slot_pick(const mll_ud *u, const llama_token *tok, int32_t n_tok, int *src,
+                         int32_t *common) {
+  int cont = -1, empty = -1, lru = -1;
+  int32_t cont_n = 0, best = 0;
+  *src = -1;
+  *common = 0;
+  for (int k = 0; k < u->n_slots; k++) {
+    const mll_slot *s = &u->slot[k];
+    int32_t n, r;
+    if (s->prompt == NULL) {
+      if (empty < 0) empty = k;
+      continue;
+    }
+    n = mll_common(tok, n_tok, s->prompt, s->prompt_n);
+    /* at least the last token is evaluated again, for this prompt's logits */
+    r = mll_slot_reusable(u, s, n < n_tok ? n : n_tok - 1);
+    if (r > best) {
+      *src = k;
+      *common = n;
+      best = r;
+    }
+    if (2 * n >= s->prompt_n && n > cont_n) {
+      cont = k;
+      cont_n = n;
+    }
+    if (lru < 0 || s->used < u->slot[lru].used) lru = k;
+  }
+  if (*src >= 0 && 2 * *common >= u->slot[*src].prompt_n) return *src;
+  if (*src < 0 && cont >= 0) return cont;
+  return empty >= 0 ? empty : lru;
+}
+
+/* The sequences share one cache of n_ctx positions. Make room for sequence
+ * k to hold `need` of them, emptying the others least recently used first,
+ * and return how many k may hold. Generation asks for one more position at
+ * a time: output budgets are ceilings, rarely spent, and reserving them up
+ * front would empty every other sequence. */
+static int32_t mll_slot_room(mll_ud *u, int k, int32_t need) {
+  for (;;) {
+    int32_t others = 0;
+    int lru = -1;
+    for (int j = 0; j < u->n_slots; j++) {
+      if (j == k || u->slot[j].n_mem == 0) continue;
+      others += u->slot[j].n_mem;
+      if (lru < 0 || u->slot[j].used < u->slot[lru].used) lru = j;
+    }
+    if (lru < 0 || others + need <= u->n_ctx) return u->n_ctx - others;
+    mll_slot_clear(u, lru);
+  }
+}
+
+/* Snapshot sequence k's recurrent state after its first n tokens.
+ * Positions grow within a call, so appending keeps the slot sorted. Over
+ * budget, the shortest prefix goes from the slot holding the most
+ * snapshots (the least recently used among equals): later calls mostly
+ * extend the long ones, and a slot without any can only start over. A
+ * missing snapshot only costs reuse, so failures are silent. */
+static void mll_ckpt_save(mll_ud *u, int k, int32_t n) {
+  mll_slot *s = &u->slot[k];
+  size_t size = llama_state_seq_get_size_ext(u->lctx, k, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+  size_t kept = size;
+  uint8_t *data = size > 0 ? (uint8_t *)malloc(size) : NULL;
+  if (data == NULL) return;
+  if (asmodel_llg_state_seq_get(u->lctx, data, size, k, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) !=
+      size) {
+    free(data);
+    return;
+  }
+  if (s->n_ckpt == MLL_CKPT_MAX) mll_ckpt_drop_first(s);
+  for (int j = 0; j < u->n_slots; j++)
+    for (int c = 0; c < u->slot[j].n_ckpt; c++) kept += u->slot[j].ckpt[c].size;
+  while (kept > MLL_CKPT_BYTES) {
+    mll_slot *v = NULL;
+    for (int j = 0; j < u->n_slots; j++) {
+      mll_slot *o = &u->slot[j];
+      if (o->n_ckpt > 0 && (v == NULL || o->n_ckpt > v->n_ckpt ||
+                            (o->n_ckpt == v->n_ckpt && o->used < v->used)))
+        v = o;
+    }
+    if (v == NULL) break;
+    kept -= v->ckpt[0].size;
+    mll_ckpt_drop_first(v);
+  }
+  s->ckpt[s->n_ckpt].n = n;
+  s->ckpt[s->n_ckpt].data = data;
+  s->ckpt[s->n_ckpt].size = size;
+  s->n_ckpt++;
+}
+
+/* Positions where the next prompt will most likely diverge from this one,
+ * judged from how this one diverged from the previous: callers that rebuild
+ * a prompt insert new content at the old divergence point and keep what
+ * followed, so the next insertion goes where that continuation resumes
+ * (mark[0]); chats append after the ending both prompts share (mark[1]).
+ * common is the raw shared prefix. A mark of 0 or less means none. */
+static void mll_ckpt_marks(const llama_token *cur, int32_t n_cur, const llama_token *prev,
+                           int32_t n_prev, int32_t common, int32_t mark[2]) {
+  int32_t tail = 0;
+  mark[0] = 0;
+  if (n_prev - common >= MLL_RESUME_LEN)
+    for (int32_t j = common + 1; j + MLL_RESUME_LEN <= n_cur; j++)
+      if (!memcmp(cur + j, prev + common, MLL_RESUME_LEN * sizeof *cur)) {
+        mark[0] = j - MLL_CKPT_MARGIN;
+        break;
+      }
+  while (tail < n_cur && tail < n_prev && cur[n_cur - 1 - tail] == prev[n_prev - 1 - tail])
+    tail++;
+  mark[1] = n_cur - tail - MLL_CKPT_MARGIN;
+}
+
+/* Rewind sequence k to at most `common` tokens: restore its longest
+ * snapshot inside the shared prefix, then drop the attention entries past
+ * it. Returns the tokens kept; 0 means the sequence was emptied. */
+static int32_t mll_ckpt_restore(mll_ud *u, int k, int32_t common) {
+  mll_slot *s = &u->slot[k];
+  llama_memory_t mem = llama_get_memory(u->lctx);
+  int c = s->n_ckpt;
+  while (c > 0 && s->ckpt[c - 1].n > common) c--;
+  mll_ckpt_drop_from(s, c); /* past the shared prefix: stale */
+  if (c > 0) {
+    const mll_ckpt *p = &s->ckpt[c - 1];
+    if (asmodel_llg_state_seq_set(u->lctx, p->data, p->size, k,
+                                  LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == p->size &&
+        llama_memory_seq_rm(mem, k, p->n, -1))
+      return p->n;
+  }
+  mll_ckpt_drop_from(s, 0);
+  llama_memory_seq_rm(mem, k, -1, -1);
+  return 0;
+}
+
+/* Start empty sequence dst from the first n tokens of sequence src, n being
+ * reusable there (mll_slot_reusable): share src's attention entries and
+ * restore src's snapshot at n into dst, which also gives up the recurrent
+ * state the copy shared with src. Returns the tokens dst starts from. */
+static int32_t mll_slot_fork(mll_ud *u, int src, int dst, int32_t n) {
+  const mll_slot *s = &u->slot[src];
+  llama_memory_t mem = llama_get_memory(u->lctx);
+  int c = 0;
+  llama_memory_seq_cp(mem, src, dst, 0, n);
+  if (!u->needs_ckpt) return n;
+  while (c < s->n_ckpt && s->ckpt[c].n != n) c++;
+  if (c < s->n_ckpt && asmodel_llg_state_seq_set(u->lctx, s->ckpt[c].data, s->ckpt[c].size, dst,
+                                                 LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) ==
+                           s->ckpt[c].size)
+    return n;
+  llama_memory_seq_rm(mem, dst, -1, -1);
+  return 0;
+}
+
+/* Decode tok[0..n) at positions pos.. of sequence seq, with logits for the
+ * last token only when `last`. */
+static int32_t mll_decode(mll_ud *u, const llama_token *tok, int32_t n, llama_pos pos,
+                          llama_seq_id seq, bool last) {
+  struct llama_batch *b = &u->batch;
+  b->n_tokens = n;
+  for (int32_t j = 0; j < n; j++) {
+    b->token[j] = tok[j];
+    b->pos[j] = pos + j;
+    b->n_seq_id[j] = 1;
+    b->seq_id[j][0] = seq;
+    b->logits[j] = last && j == n - 1;
+  }
+  return asmodel_llg_decode(u->lctx, *b);
 }
 
 /* ---- generation --------------------------------------------------------- */
@@ -279,6 +549,9 @@ static int mll_generate(void *ud, const asmodel_input *input, const char *gbnf,
   llama_token *tok = NULL;
   int32_t n_tok = 0;
   int32_t prompt_start = 0;
+  int32_t mark[2] = {0, 0}; /* extra snapshot positions (mll_ckpt_marks) */
+  int k = -1;               /* sequence this call evaluates in           */
+  int32_t room = 0;         /* positions that sequence may hold          */
   struct llama_sampler *chain = NULL;
   core_buf outbuf;
   asmodel_err e;
@@ -334,21 +607,40 @@ static int mll_generate(void *ud, const asmodel_input *input, const char *gbnf,
     goto out;
   }
   *out_tokens_in = (int)n_tok;
+  limit = p->max_tokens > 0 ? p->max_tokens : INT_MAX;
 
-  if (u->kv_cache && u->cached_prompt && u->cached_prompt_n > 0) {
-    int32_t common = 0;
-    while (common < n_tok && common < u->cached_prompt_n &&
-           tok[common] == u->cached_prompt[common]) common++;
-    /* Re-evaluate at least the last prompt token so the logits used for the
-     * first sample correspond to this prompt, not the previous completion. */
+  if (u->kv_cache) {
+    llama_memory_t mem = llama_get_memory(u->lctx);
+    int src;
+    int32_t common;
+    mll_slot *s, *prev;
+    k = mll_slot_pick(u, tok, n_tok, &src, &common);
+    s = &u->slot[k];
+    s->used = ++u->calls;
+    /* The next change is predicted from how this prompt departs from the
+     * one it reuses, else from the one it replaces. */
+    prev = src >= 0 ? &u->slot[src] : s;
+    if (src < 0 && s->prompt != NULL) common = mll_common(tok, n_tok, s->prompt, s->prompt_n);
+    if (u->needs_ckpt && prev->prompt != NULL)
+      mll_ckpt_marks(tok, n_tok, prev->prompt, prev->prompt_n, common, mark);
+    /* Re-evaluate at least the last prompt token so the logits used for
+     * the first sample correspond to this prompt, not the previous
+     * completion. */
     if (common >= n_tok) common = n_tok - 1;
-    if (common > 0 &&
-        llama_memory_seq_rm(llama_get_memory(u->lctx), -1, common, -1))
-      prompt_start = common;
-    else
-      asmodel_llg_memory_clear(llama_get_memory(u->lctx), true);
+    if (src == k) {
+      if (u->needs_ckpt) prompt_start = mll_ckpt_restore(u, k, common);
+      else if (llama_memory_seq_rm(mem, k, common, -1)) prompt_start = common;
+      else llama_memory_seq_rm(mem, k, -1, -1);
+    } else {
+      if (s->prompt != NULL) mll_slot_clear(u, k);
+      if (src >= 0)
+        prompt_start = mll_slot_fork(u, src, k, mll_slot_reusable(u, &u->slot[src], common));
+    }
+    room = mll_slot_room(u, k, n_tok);
   } else {
+    k = 0;
     asmodel_llg_memory_clear(llama_get_memory(u->lctx), true);
+    room = u->n_ctx;
   }
 
   /* Fresh sampler chain per call: grammar state is per-generation, and
@@ -412,22 +704,23 @@ static int mll_generate(void *ud, const asmodel_input *input, const char *gbnf,
     llama_sampler_chain_add(chain, sm);
   }
 
-  for (i = prompt_start; i < n_tok; i += u->n_batch) {
-    int32_t chunk = n_tok - i < u->n_batch ? n_tok - i : u->n_batch;
-    struct llama_batch batch;
+  for (i = prompt_start; i < n_tok;) {
+    int32_t end = n_tok - i < u->n_batch ? n_tok : i + u->n_batch;
+    for (int m = 0; m < 2; m++)
+      if (mark[m] > i && mark[m] < end) end = mark[m];
     if (mll_cancelled(cancel) || mll_expired(deadline_at)) {
       e = mll_expired(deadline_at) ? ASMODEL_ERR_TIMEOUT : ASMODEL_ERR_CANCELLED;
       goto out;
     }
-    batch = llama_batch_get_one(tok + i, chunk);
-    if (asmodel_llg_decode(u->lctx, batch) != 0) {
+    if (mll_decode(u, tok + i, end - i, i, k, end == n_tok) != 0) {
       e = mll_expired(deadline_at) ? ASMODEL_ERR_TIMEOUT
           : mll_cancelled(cancel) ? ASMODEL_ERR_CANCELLED : ASMODEL_ERR_BACKEND;
       goto out;
     }
+    i = end;
+    if (u->needs_ckpt && i < n_tok) mll_ckpt_save(u, k, i);
   }
 
-  limit = p->max_tokens > 0 ? p->max_tokens : INT_MAX;
   n_past = n_tok;
   produced = 0;
   while (produced < limit) {
@@ -447,14 +740,13 @@ static int mll_generate(void *ud, const asmodel_input *input, const char *gbnf,
     e = mll_emit_piece(u->vocab, t, &outbuf, token_cb, token_ud);
     if (e != ASMODEL_OK) goto out;
     produced++;
-    if (produced >= limit || n_past >= u->n_ctx) break;
-    {
-      struct llama_batch batch = llama_batch_get_one(&t, 1);
-      if (asmodel_llg_decode(u->lctx, batch) != 0) {
-        e = mll_expired(deadline_at) ? ASMODEL_ERR_TIMEOUT
-            : mll_cancelled(cancel) ? ASMODEL_ERR_CANCELLED : ASMODEL_ERR_BACKEND;
-        goto out;
-      }
+    if (produced >= limit) break;
+    if (n_past >= room && u->kv_cache) room = mll_slot_room(u, k, n_past + 1);
+    if (n_past >= room) break;
+    if (mll_decode(u, &t, 1, n_past, k, true) != 0) {
+      e = mll_expired(deadline_at) ? ASMODEL_ERR_TIMEOUT
+          : mll_cancelled(cancel) ? ASMODEL_ERR_CANCELLED : ASMODEL_ERR_BACKEND;
+      goto out;
     }
     n_past++;
   }
@@ -465,19 +757,22 @@ static int mll_generate(void *ud, const asmodel_input *input, const char *gbnf,
     e = ASMODEL_ERR_NOMEM;
     goto out;
   }
-  if (!hit_eog && (produced >= limit || n_past >= u->n_ctx)) {
-    e = ASMODEL_ERR_LIMIT;
-    goto out;
-  }
-  e = ASMODEL_OK;
+  e = !hit_eog && (produced >= limit || n_past >= room) ? ASMODEL_ERR_LIMIT : ASMODEL_OK;
   if (u->kv_cache) {
-    llama_token *cached =
-        (llama_token *)malloc((size_t)n_tok * sizeof *cached);
-    if (cached) {
-      memcpy(cached, tok, (size_t)n_tok * sizeof *cached);
-      free(u->cached_prompt);
-      u->cached_prompt = cached;
-      u->cached_prompt_n = n_tok;
+    /* A length stop leaves the sequence as consistent as an end of
+     * generation. Without a record of this prompt the sequence starts
+     * clean; keeping the previous one would match tokens it no longer
+     * holds. */
+    mll_slot *s = &u->slot[k];
+    llama_token *rec = (llama_token *)malloc((size_t)n_tok * sizeof *rec);
+    if (rec != NULL) {
+      memcpy(rec, tok, (size_t)n_tok * sizeof *rec);
+      free(s->prompt);
+      s->prompt = rec;
+      s->prompt_n = n_tok;
+      s->n_mem = n_past;
+    } else {
+      mll_slot_clear(u, k);
     }
   }
 
@@ -500,12 +795,8 @@ out:
     if (constrained) info->applied |= ASMODEL_APPLIED_CONSTRAINT;
     if (e != ASMODEL_OK) snprintf(info->error,sizeof info->error,"%s",asmodel_err_name(e));
   }
-  if (e != ASMODEL_OK) {
-    free(u->cached_prompt);
-    u->cached_prompt = NULL;
-    u->cached_prompt_n = 0;
-    asmodel_llg_memory_clear(llama_get_memory(u->lctx), true);
-  }
+  if (e != ASMODEL_OK && e != ASMODEL_ERR_LIMIT && u->kv_cache && k >= 0)
+    mll_slot_clear(u, k);
   return e;
 }
 
@@ -629,7 +920,11 @@ static void mll_destroy(void *ud) {
   if (u == NULL) return;
   if (u->lctx != NULL) llama_free(u->lctx);
   if (u->model != NULL) llama_model_free(u->model);
-  free(u->cached_prompt);
+  llama_batch_free(u->batch); /* NULL-safe: zeroed for embedding models */
+  for (int k = 0; k < MLL_SLOTS; k++) {
+    free(u->slot[k].prompt);
+    mll_ckpt_drop_from(&u->slot[k], 0);
+  }
   os_mutex_destroy(&u->cancel_mu);
   free(u);
 }
@@ -676,6 +971,8 @@ int asmodel_llama_provider_create(const asmodel_spec *spec,
   u->vocab = llama_model_get_vocab(u->model);
   if (u->vocab == NULL)
     MLL_FAIL(ASMODEL_ERR_BACKEND, "model '%s': no vocab in %s", spec->id, spec->path);
+  u->needs_ckpt = u->kv_cache && (llama_model_is_recurrent(u->model) ||
+                                  llama_model_is_hybrid(u->model));
 
   hw = os_hardware_threads();
   threads = spec->threads > 0 ? spec->threads : 4;
@@ -714,6 +1011,12 @@ int asmodel_llama_provider_create(const asmodel_spec *spec,
     cparams.n_ctx = (uint32_t)n_ctx;
     cparams.n_batch = MLL_N_BATCH;
     cparams.n_ubatch = MLL_N_BATCH;
+    /* One sequence per kept prompt over one unified cache, so any prompt
+     * may still use the whole context (mll_slot_room). Recurrent memory
+     * holds one state per sequence. */
+    u->n_slots = u->kv_cache ? MLL_SLOTS : 1;
+    cparams.n_seq_max = (uint32_t)u->n_slots;
+    cparams.kv_unified = true;
   }
 
   u->lctx = llama_init_from_model(u->model, cparams);
@@ -725,6 +1028,11 @@ int asmodel_llama_provider_create(const asmodel_spec *spec,
   /* Embedding truncation bound: the whole input must fit both the context
    * and one logical batch (llama may round n_ctx up past the request). */
   if (u->embedding && u->n_batch < u->n_ctx) u->n_ctx = u->n_batch;
+  if (!u->embedding) {
+    u->batch = llama_batch_init(u->n_batch, 0, 1);
+    if (u->batch.token == NULL || u->batch.seq_id == NULL)
+      MLL_FAIL(ASMODEL_ERR_NOMEM, "model '%s': out of memory", spec->id);
+  }
 
   out->userdata = u;
   /* Counts include the chat template, so admission is exact. */
@@ -746,7 +1054,14 @@ fail:
   return e;
 }
 
+int asmodel_llama_gpu(void) {
+  mll_backend_init();
+  return llama_supports_gpu_offload() ? 1 : 0;
+}
+
 #else /* !ASTERISM_WITH_LLAMA */
+
+int asmodel_llama_gpu(void) { return -1; }
 
 int asmodel_llama_provider_create(const asmodel_spec *spec,
                                   asmodel_provider *out, char *error,

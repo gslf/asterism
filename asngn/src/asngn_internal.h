@@ -161,6 +161,7 @@ typedef struct {
   char *base_url;
   char *remote_model;
   char *api_key_env;
+  char *auth_file;  /* provider "chatgpt": OAuth credential record, owned */
   asmodel_remote_provider remote_provider;
   int   ctx;
   int   threads;
@@ -394,6 +395,7 @@ typedef struct {
   char       *text;       /* owned                                  */
   core_time  at;
   bool        pinned;
+  asngn_origin origin;    /* user turns: author of the text           */
   /* route summary, assistant turns only (empty strings otherwise)   */
   char        klass[12], detail[8], mode[8], tier[16], cache[8];
   int         steps;
@@ -439,6 +441,7 @@ struct asngn_session {
   /* Process-local grants bound to package, workspace and security profile. */
   char      **allow;
   size_t      allow_n;
+  asngn_origin last_origin; /* author of last_user_msg, for /more and /retry */
   /* resident ledger (small; drives stats, QpT, feedback, export) */
   struct asngn_ledger_entry_s *led;
   size_t      led_n, led_cap;
@@ -454,6 +457,21 @@ struct asngn_session {
 
 asngn_err asngn_session_load(asngn_ctx *c, const char *slug,
                              asngn_session **out); /* create if missing */
+
+/* ── projects (project.c) ─────────────────────────────────────────────── */
+
+/* Registered project by name, no error recorded; ASNGN_ERR_NOT_FOUND. */
+asngn_err asngn_project_lookup(asngn_ctx *c, const char *name,
+                               asngn_project_info *out);
+/* Point the session's workspace at its project's folder, or back at its
+ * private workspace when the project is not registered (any more). Caller
+ * holds s->lock for writing; c reports errors (a lane or the owner).
+ * ASNGN_ERR_NOT_FOUND: the project's folder is gone. */
+asngn_err asngn_session_project_sync(asngn_ctx *c, asngn_session *s);
+/* One turn per project: ASNGN_ERR_BUSY while another session holds it. */
+asngn_err asngn_project_hold(asngn_ctx *c, const char *name, const char *slug);
+void      asngn_project_release(asngn_ctx *c, const char *name);
+void      asngn_project_holds_free(asngn_ctx *c);
 asngn_err asngn_session_workspace_activate(asngn_session *s);
 void      asngn_session_free(asngn_session *s);
 asngn_err asngn_session_save_manifest(asngn_session *s);
@@ -859,8 +877,17 @@ typedef struct {
   char  ref[64];       /* tool id (with version when given)          */
   char  cmd[64];
   bool  read_only, destructive, idempotent, long_running;
+  bool  network;       /* the package requests network access        */
+  bool  delegate;      /* the package runs an external agent         */
   char  version[32];
 } asngn_tool_note;
+
+/* Secrets at the tool boundary (secrets.c). resolve sets *out to NULL when
+ * the arguments carry no placeholder; DENIED with a reason otherwise. */
+asngn_err asngn_secrets_resolve(asngn_ctx *c, const char *tool_ref, const char *args,
+                                char **out, char *why, size_t why_size);
+void asngn_secrets_free(char *s);
+void asngn_secrets_redact(asngn_ctx *c, char **text);
 
 asngn_err asngn_modules_open(asngn_ctx *c);
 void      asngn_modules_close(asngn_ctx *c);
@@ -900,6 +927,13 @@ asngn_err asngn_modules_event_append(asngn_ctx *c, const char *scope,
                                       const char *text,
                                       const char *object_ref, bool pinned,
                                       char out_id[37]);
+/* Same, recording who produced the text (asper labels untrusted origins). */
+asngn_err asngn_modules_event_append_from(asngn_ctx *c, const char *scope,
+                                           asngn_memory_kind kind,
+                                           const char *text,
+                                           const char *object_ref, bool pinned,
+                                           asngn_origin origin,
+                                           char out_id[37]);
 asngn_err asngn_modules_event_list(asngn_ctx *c, const char *scope,
                                     asngn_memory_event **out, size_t *out_n);
 void asngn_modules_events_free(asngn_memory_event *events, size_t n);
@@ -1006,6 +1040,9 @@ typedef struct asngn_turn_state {
   asngn_stream_fn stream_cb; void *stream_ud;
   asngn_usage_mode usage_mode;
   asngn_security_profile security_profile;
+  /* First untrusted source seen this turn (input, network tool, delegate);
+   * HOST while untainted. Drives the confirmation gate. */
+  asngn_origin   taint;
 } asngn_turn_state;
 
 asngn_err asngn_tools_select(asngn_ctx *c, asngn_turn_state *t, const char *intent);
@@ -1029,6 +1066,7 @@ struct asngn_task {
   asngn_ctx     *ctx;
   asngn_session *session;
   asngn_turn_state *turn;   /* owned                                 */
+  char           project[ASNGN_PROJECT_NAME_MAX + 1]; /* held; "" none */
   os_mutex       mu;
   os_cond        cv;
   bool           done;
@@ -1092,6 +1130,10 @@ struct asngn_ctx {
   asngn_repo_stats repo_stats; /* refreshed with the fingerprint     */
   bool          allow_degraded;
   bool          session_workspaces; /* sessions/<slug>/workspace mode */
+  /* projects.xcdn writers and the projects a turn holds (project.c) */
+  os_mutex      projects_mu;
+  struct asngn_project_hold *project_holds;
+  size_t        project_holds_n;
 
   /* eval-suite calibration (route.c; probed once, agent thread only) */
   struct {

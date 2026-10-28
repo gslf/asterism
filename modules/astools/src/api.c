@@ -246,6 +246,15 @@ astools_err astools_open(const astools_open_params *p, astools_ctx **out) {
     free(c->cfg.workspace_root);
     c->cfg.workspace_root = dup;
   }
+  if (p && p->scratch_root) {
+    char *dup = core_strdup(p->scratch_root);
+    if (!dup) {
+      e = astools_seterr(c, ASTOOLS_ERR_NOMEM, "out of memory");
+      goto fail;
+    }
+    free(c->cfg.scratch);
+    c->cfg.scratch = dup;
+  }
 
   /* 4. workspace + scratch base (not created here; sandbox mkdir_p's) */
   ws = (c->cfg.workspace_root && c->cfg.workspace_root[0] != '\0')

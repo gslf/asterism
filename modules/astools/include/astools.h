@@ -56,6 +56,7 @@ typedef struct {
   const char *const *registry_paths;
   const char *config_path;    /* optional config.xcdn; NULL = defaults   */
   const char *workspace_root; /* overrides workspace.root; NULL = config */
+  const char *scratch_root;   /* overrides workspace.scratch; NULL = config */
 } astools_open_params;
 
 astools_err astools_open(const astools_open_params *p, astools_ctx **out);

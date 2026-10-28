@@ -709,6 +709,220 @@ TEST(model_introspection_bounds_shared_manager_stats) {
   fx_drop(&f);
 }
 
+
+/* ── projects ─────────────────────────────────────────────────────────── */
+
+/* Session workspaces, as with integration.astools.workspace "session". */
+static int fx_session_workspaces(fx *f) {
+  free(f->c->cfg.astools_workspace);
+  f->c->cfg.astools_workspace = core_strdup("session");
+  f->c->session_workspaces = true;
+  return f->c->cfg.astools_workspace != NULL;
+}
+
+static int fx_contains(const char *haystack, const char *needle) {
+  return haystack != NULL && strstr(haystack, needle) != NULL;
+}
+
+TEST(projects_register_validate_and_persist) {
+  fx f;
+  char ext[256], path[400], *real_root = NULL, *real_ext = NULL;
+  asngn_project_info p, *list = NULL;
+  size_t n = 0;
+
+  ASSERT_TRUE(fx_setup(&f, CACHE_OFF));
+  ASSERT_TRUE(test_tmpdir(ext));
+  real_root = asngn_realpath(f.root);
+  real_ext = asngn_realpath(ext);
+  ASSERT_TRUE(real_root != NULL && real_ext != NULL);
+
+  /* A new project gets its folder under <root>/projects. */
+  ASSERT_OK(asngn_project_add(f.c, "demo", NULL, &p));
+  snprintf(path, sizeof path, "%s/projects/demo", real_root);
+  ASSERT_EQ_STR(p.path, path);
+  ASSERT_TRUE(os_is_dir(path));
+  ASSERT_EQ_INT(asngn_project_add(f.c, "demo", NULL, NULL), ASNGN_ERR_INVALID);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "Demo", NULL, NULL), ASNGN_ERR_INVALID);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "new", NULL, NULL), ASNGN_ERR_INVALID);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "a b", NULL, NULL), ASNGN_ERR_INVALID);
+
+  /* An existing folder is registered by its canonical path. */
+  ASSERT_OK(asngn_project_add(f.c, "ext", ext, &p));
+  ASSERT_EQ_STR(p.path, real_ext);
+  snprintf(path, sizeof path, "%s/sub", ext);
+  ASSERT_OK(os_mkdir_p(path));
+  ASSERT_EQ_INT(asngn_project_add(f.c, "sub", path, NULL), ASNGN_ERR_DENIED);
+  ASSERT_TRUE(fx_contains(asngn_last_error(f.c), "overlaps project ext"));
+
+  /* The engine root, its sessions and the projects folder itself. */
+  ASSERT_EQ_INT(asngn_project_add(f.c, "r1", f.root, NULL), ASNGN_ERR_DENIED);
+  snprintf(path, sizeof path, "%s/sessions", f.root);
+  ASSERT_OK(os_mkdir_p(path));
+  ASSERT_EQ_INT(asngn_project_add(f.c, "r2", path, NULL), ASNGN_ERR_DENIED);
+  snprintf(path, sizeof path, "%s/projects", f.root);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "r3", path, NULL), ASNGN_ERR_DENIED);
+  snprintf(path, sizeof path, "%s/no-such-folder", ext);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "gone", path, NULL), ASNGN_ERR_NOT_FOUND);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "rel", "relative/dir", NULL),
+                ASNGN_ERR_INVALID);
+#if !defined(_WIN32)
+  ASSERT_EQ_INT(asngn_project_add(f.c, "fsroot", "/", NULL), ASNGN_ERR_DENIED);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "etc", "/usr/bin", NULL), ASNGN_ERR_DENIED);
+  ASSERT_EQ_INT(asngn_project_add(f.c, "tmp", "/tmp", NULL), ASNGN_ERR_DENIED);
+  {
+    /* "~" is the home folder: refused itself, fine inside. */
+    char home[256], inner[300], *old = getenv("HOME") ? core_strdup(getenv("HOME")) : NULL;
+    ASSERT_TRUE(test_tmpdir(home));
+    snprintf(inner, sizeof inner, "%s/inner", home);
+    ASSERT_OK(os_mkdir_p(inner));
+    ASSERT_TRUE(setenv("HOME", home, 1) == 0);
+    ASSERT_EQ_INT(asngn_project_add(f.c, "home", "~", NULL), ASNGN_ERR_DENIED);
+    ASSERT_TRUE(fx_contains(asngn_last_error(f.c), "home folder"));
+    ASSERT_OK(asngn_project_add(f.c, "inner", "~/inner", &p));
+    ASSERT_TRUE(fx_contains(p.path, "inner"));
+    if (old != NULL) setenv("HOME", old, 1); else unsetenv("HOME");
+    free(old);
+    ASSERT_OK(asngn_project_remove(f.c, "inner"));
+    test_rmtree(home);
+  }
+#endif
+
+  ASSERT_OK(asngn_projects_list(f.c, &list, &n));
+  ASSERT_EQ_INT(n, 2);
+  ASSERT_EQ_STR(list[0].name, "demo");
+  ASSERT_EQ_STR(list[1].name, "ext");
+  asngn_free(list);
+
+  /* Removing unregisters only: the folder stays. */
+  ASSERT_OK(asngn_project_remove(f.c, "ext"));
+  ASSERT_TRUE(os_is_dir(real_ext));
+  ASSERT_EQ_INT(asngn_project_remove(f.c, "ext"), ASNGN_ERR_NOT_FOUND);
+  ASSERT_EQ_INT(asngn_project_get(f.c, "ext", &p), ASNGN_ERR_NOT_FOUND);
+
+  /* The registry is a file of the root. */
+  asngn_close(f.c);
+  f.c = NULL;
+  ASSERT_TRUE(fx_open_ctx(&f));
+  ASSERT_OK(asngn_project_get(f.c, "demo", &p));
+  ASSERT_OK(asngn_projects_list(f.c, &list, &n));
+  ASSERT_EQ_INT(n, 1);
+  asngn_free(list);
+  free(real_root);
+  free(real_ext);
+  test_rmtree(ext);
+  fx_drop(&f);
+}
+
+TEST(project_binding_moves_workspace_and_mode) {
+  fx f;
+  asngn_session *s = NULL;
+  asngn_project_info p;
+  asngn_workspace_info w;
+  asngn_usage_mode mode;
+  asngn_security_profile profile;
+
+  ASSERT_TRUE(fx_setup(&f, CACHE_OFF));
+  ASSERT_TRUE(fx_session_workspaces(&f));
+  ASSERT_OK(asngn_project_add(f.c, "demo", NULL, &p));
+  ASSERT_OK(asngn_session_open(f.c, "alpha", &s));
+  ASSERT_OK(asngn_session_set_mode(s, ASNGN_USAGE_CHAT));
+
+  /* A chat session bound to a project works in its folder, with tools. */
+  ASSERT_OK(asngn_session_project(s, "demo"));
+  ASSERT_OK(asngn_session_workspace(s, &w));
+  ASSERT_EQ_STR(w.canonical_root, p.path);
+  ASSERT_OK(asngn_session_get_mode(s, &mode, &profile));
+  ASSERT_EQ_INT(mode, ASNGN_USAGE_CODING);
+  ASSERT_EQ_INT(profile, ASNGN_SECURITY_CODING_SANDBOXED);
+  asngn_session_close(s);
+  s = NULL;
+
+  /* The binding survives reopening. */
+  ASSERT_OK(asngn_session_open(f.c, "alpha", &s));
+  ASSERT_EQ_STR(s->project, "demo");
+  ASSERT_OK(asngn_session_workspace(s, &w));
+  ASSERT_EQ_STR(w.canonical_root, p.path);
+
+  /* Unbound, or bound to a memory-only project: the private folder. */
+  ASSERT_OK(asngn_session_project(s, NULL));
+  ASSERT_OK(asngn_session_workspace(s, &w));
+  ASSERT_TRUE(fx_contains(w.canonical_root, "alpha"));
+  ASSERT_TRUE(fx_contains(w.canonical_root, "workspace"));
+  ASSERT_OK(asngn_session_project(s, "notes"));
+  ASSERT_OK(asngn_session_workspace(s, &w));
+  ASSERT_TRUE(fx_contains(w.canonical_root, "alpha"));
+  ASSERT_OK(asngn_session_get_mode(s, &mode, &profile));
+  ASSERT_EQ_INT(mode, ASNGN_USAGE_CODING);
+
+  /* An engine pinned to one workspace has no projects. */
+  f.c->session_workspaces = false;
+  ASSERT_EQ_INT(asngn_session_project(s, "demo"), ASNGN_ERR_UNSUPPORTED);
+  f.c->session_workspaces = true;
+  asngn_session_close(s);
+  fx_drop(&f);
+}
+
+TEST(project_folder_missing_or_unregistered) {
+  fx f;
+  asngn_session *s = NULL;
+  asngn_project_info p;
+  asngn_workspace_info w;
+
+  ASSERT_TRUE(fx_setup(&f, CACHE_OFF));
+  ASSERT_TRUE(fx_session_workspaces(&f));
+  ASSERT_OK(asngn_project_add(f.c, "demo", NULL, &p));
+  ASSERT_OK(asngn_session_open(f.c, "alpha", &s));
+  ASSERT_OK(asngn_session_project(s, "demo"));
+  asngn_session_close(s);
+  s = NULL;
+
+  /* A vanished folder does not lock the session out; turns report it. */
+  ASSERT_OK(os_remove_dir(p.path));
+  ASSERT_OK(asngn_session_open(f.c, "alpha", &s));
+  ASSERT_EQ_INT(asngn_session_project_sync(f.c, s), ASNGN_ERR_NOT_FOUND);
+  ASSERT_TRUE(fx_contains(asngn_last_error(f.c), "is missing"));
+  ASSERT_OK(os_mkdir_p(p.path));
+  ASSERT_OK(asngn_session_project_sync(f.c, s));
+  ASSERT_EQ_STR(s->workspace.canonical_root, p.path);
+
+  /* Unregistered: the session falls back to its private folder. */
+  ASSERT_OK(asngn_project_remove(f.c, "demo"));
+  ASSERT_OK(asngn_session_project_sync(f.c, s));
+  ASSERT_OK(asngn_session_workspace(s, &w));
+  ASSERT_TRUE(fx_contains(w.canonical_root, "alpha"));
+  asngn_session_close(s);
+  fx_drop(&f);
+}
+
+TEST(one_turn_per_project) {
+  fx f;
+  asngn_session *a = NULL, *b = NULL;
+  asngn_task *task = NULL;
+
+  ASSERT_TRUE(fx_setup(&f, CACHE_OFF));
+  ASSERT_TRUE(fx_session_workspaces(&f));
+  ASSERT_OK(asngn_project_add(f.c, "demo", NULL, NULL));
+  ASSERT_OK(asngn_session_open(f.c, "alpha", &a));
+  ASSERT_OK(asngn_session_open(f.c, "beta", &b));
+  ASSERT_OK(asngn_session_project(a, "demo"));
+  ASSERT_OK(asngn_session_project(b, "demo"));
+
+  ASSERT_OK(asngn_project_hold(f.c, "demo", "alpha"));
+  ASSERT_EQ_INT(asngn_project_hold(f.c, "demo", "gamma"), ASNGN_ERR_BUSY);
+  ASSERT_EQ_INT(asngn_submit(b, "hello", NULL, NULL, NULL, &task),
+                ASNGN_ERR_BUSY);
+  ASSERT_TRUE(fx_contains(asngn_last_error(f.c), "running in session alpha"));
+  asngn_project_release(f.c, "demo");
+
+  /* Free again, and released when the turn ends. */
+  ASSERT_TRUE(fx_turn(&f, b, "hello", "hi", NULL));
+  ASSERT_OK(asngn_project_hold(f.c, "demo", "alpha"));
+  asngn_project_release(f.c, "demo");
+  asngn_session_close(a);
+  asngn_session_close(b);
+  fx_drop(&f);
+}
+
 TEST_LIST = {
   TEST_ENTRY(model_introspection_bounds_shared_manager_stats),
   TEST_ENTRY(uncertain_commit_blocks_until_reopen),
@@ -732,6 +946,10 @@ TEST_LIST = {
   TEST_ENTRY(workspace_is_bound_and_live_fingerprinted),
   TEST_ENTRY(workspace_discovers_repository_identity),
   TEST_ENTRY(session_workspace_is_private_and_switches_deterministically),
+  TEST_ENTRY(projects_register_validate_and_persist),
+  TEST_ENTRY(project_binding_moves_workspace_and_mode),
+  TEST_ENTRY(project_folder_missing_or_unregistered),
+  TEST_ENTRY(one_turn_per_project),
 };
 
 RUN_ALL_TESTS()

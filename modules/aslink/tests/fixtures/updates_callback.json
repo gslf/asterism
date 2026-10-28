@@ -1,0 +1,14 @@
+{"ok":true,"result":[
+ {"update_id":30,"callback_query":{"id":"4382bfdwdsb323b2d9","from":{"id":5,"is_bot":false,"first_name":"Ann","username":"ann"},
+  "message":{"message_id":77,"from":{"id":999,"is_bot":true,"first_name":"Asterism","username":"asterism_bot"},
+   "chat":{"id":5,"first_name":"Ann","type":"private"},"date":1793001800,
+   "message_thread_id":4,"is_topic_message":true,
+   "text":"Approve sending?",
+   "reply_markup":{"inline_keyboard":[[{"text":"Yes ✓","callback_data":"ap:1:ok:3f2a"},{"text":"No","callback_data":"ap:1:no:3f2a"}]]}},
+  "chat_instance":"-7890123456","data":"ap:1:ok:3f2a"}},
+ {"update_id":31,"callback_query":{"id":"4382bfdwdsb323b2da","from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "message":{"chat":{"id":5,"type":"private"},"message_id":12,"date":0},
+  "chat_instance":"-7890123456","data":"old"}},
+ {"update_id":32,"callback_query":{"id":"4382bfdwdsb323b2db","from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "inline_message_id":"AAAAinline","chat_instance":"-1","game_short_name":"g"}}
+]}

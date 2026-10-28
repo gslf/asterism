@@ -184,6 +184,7 @@ asngn_err asngn_shared_models_init(asngn_ctx *c) {
     asmodel_spec s = {0};
     s.id=p->id; s.backend=p->backend; s.path=p->path; s.base_url=p->base_url;
     s.remote_model=p->remote_model; s.api_key_env=p->api_key_env;
+    s.auth_file=p->auth_file;
     s.remote_provider=p->remote_provider; s.context_tokens=p->ctx;
     s.threads=p->threads; s.gpu_layers=p->gpu_layers; s.embedding=p->embedding;
     s.pipeline = p->pipeline;

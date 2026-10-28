@@ -71,10 +71,18 @@ asngn_err asngn_model_provider_create(asngn_ctx *c,
                                       asngn_model_iface *out) {
   asmodel_spec spec;
   provider_ud *u;
-  char error[256] = {0};
+  char error[256] = {0}, *auth_file = NULL;
   int rc;
   memset(out, 0, sizeof *out);
   memset(&spec, 0, sizeof spec);
+  /* ChatGPT credentials, like every engine-root artifact, resolve under the
+   * engine root when relative (the process cwd is arbitrary). */
+  if (e->auth_file != NULL) {
+    auth_file = os_path_is_abs(e->auth_file) || c->root == NULL
+                    ? core_strdup(e->auth_file) : os_path_join(c->root, e->auth_file);
+    if (auth_file == NULL) return ASNGN_ERR_NOMEM;
+  }
+  spec.auth_file = auth_file;
   spec.id = e->id; spec.backend = e->backend; spec.path = e->path;
   spec.base_url = e->base_url; spec.remote_model = e->remote_model;
   spec.api_key_env = e->api_key_env;
@@ -83,8 +91,9 @@ asngn_err asngn_model_provider_create(asngn_ctx *c,
   spec.gpu_layers = e->gpu_layers; spec.kv_cache = e->kv_cache;
   spec.embedding = e->embedding; spec.embedding_dim = e->dim;
   u = (provider_ud *)calloc(1, sizeof *u);
-  if (!u) return ASNGN_ERR_NOMEM;
+  if (!u) { free(auth_file); return ASNGN_ERR_NOMEM; }
   rc = asmodel_provider_create(&spec, &u->provider, error, sizeof error);
+  free(auth_file); /* the provider keeps its own copy */
   if (rc != ASMODEL_OK) {
     free(u);
     return asngn_seterr(c, rc == ASMODEL_ERR_NOMEM ? ASNGN_ERR_NOMEM : ASNGN_ERR_MODEL,

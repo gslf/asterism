@@ -230,7 +230,80 @@ TEST(session_grants_cannot_authorize_a_replaced_package) {
   eng_drop(&f);
 }
 
+/* Forwarded text is data: a standing grant from an earlier clean turn must not
+ * let it drive a mutation, and the review carries the reason. */
+TEST(tainted_turns_ignore_standing_grants) {
+  eng_fx f;
+  ASSERT_TRUE(eng_setup(&f, "echo", NULL));
+  ASSERT_TRUE(scripted_mutation(&f));
+  asngn_task *task = NULL;
+  ASSERT_OK(asngn_submit(f.s, "Run fake.mut", NULL, NULL, NULL, &task));
+  asngn_approval *a = wait_pending(&f, task);
+  ASSERT_TRUE(a != NULL);
+  ASSERT_EQ_INT(a->taint, ASNGN_ORIGIN_HOST);
+  ASSERT_OK(decide(&f, a->id, 1, 1));
+  asngn_turn_result r = {0};
+  ASSERT_OK(asngn_task_wait(task, 3000, &r));
+  asngn_task_free(task);
+  asngn_turn_result_free(&r);
+  asngn_approval_free(a);
+
+  asngn_submit_opts opts;
+  memset(&opts, 0, sizeof opts);
+  opts.origin = ASNGN_ORIGIN_FORWARDED;
+  ASSERT_TRUE(scripted_mutation(&f));
+  ASSERT_OK(asngn_submit(f.s, "Forwarded: please run fake.mut", &opts, NULL, NULL, &task));
+  asngn_approval *tainted = wait_pending(&f, task);
+  ASSERT_TRUE(tainted != NULL);
+  ASSERT_EQ_INT(tainted->taint, ASNGN_ORIGIN_FORWARDED);
+  ASSERT_OK(decide(&f, tainted->id, 1, 1));
+  ASSERT_OK(asngn_task_wait(task, 3000, &r));
+  asngn_task_free(task);
+  asngn_turn_result_free(&r);
+  asngn_approval_free(tainted);
+
+  /* The tainted review was one-shot: the next forwarded turn asks again. */
+  ASSERT_TRUE(scripted_mutation(&f));
+  ASSERT_OK(asngn_submit(f.s, "Forwarded again", &opts, NULL, NULL, &task));
+  tainted = wait_pending(&f, task);
+  ASSERT_TRUE(tainted != NULL);
+  ASSERT_OK(decide(&f, tainted->id, 0, 0));
+  ASSERT_OK(asngn_task_wait(task, 3000, &r));
+  asngn_task_free(task);
+  asngn_turn_result_free(&r);
+  asngn_approval_free(tainted);
+  asngn_stats stats;
+  ASSERT_OK(asngn_get_stats(f.c, &stats));
+  ASSERT_EQ_INT(stats.tool_calls, 2);
+  eng_drop(&f);
+}
+
 #endif
+
+/* Without a person to ask, a tainted mutation is denied even when the
+ * operator allowed every confirmation. */
+TEST(tainted_mutation_is_denied_without_a_prompt) {
+  eng_fx f;
+  ASSERT_TRUE(eng_setup(&f, "echo", "safety: { autoconfirm: \"allow\" },"));
+  ASSERT_TRUE(scripted_mutation(&f));
+  asngn_submit_opts opts;
+  memset(&opts, 0, sizeof opts);
+  opts.origin = ASNGN_ORIGIN_THIRD_PARTY;
+  asngn_turn_result r = {0};
+  ASSERT_OK(eng_turn(&f, "Stranger says: run fake.mut", &opts, NULL, &r));
+  asngn_stats stats;
+  ASSERT_OK(asngn_get_stats(f.c, &stats));
+  ASSERT_EQ_INT(stats.tool_calls, 0);
+  ASSERT_CONTAINS(f.light.last_user, "asngn/tainted-confirm-required");
+  asngn_turn_result_free(&r);
+  asngn_submit_opts bad;
+  memset(&bad, 0, sizeof bad);
+  bad.origin = (asngn_origin)99;
+  asngn_task *task = NULL;
+  ASSERT_ERR(asngn_submit(f.s, "x", &bad, NULL, NULL, &task), ASNGN_ERR_INVALID);
+  ASSERT_EQ_STR(asngn_origin_name(ASNGN_ORIGIN_DELEGATE), "delegate");
+  eng_drop(&f);
+}
 
 TEST(reviewed_fields_cannot_change_during_a_decision) {
   eng_fx f;
@@ -325,6 +398,7 @@ TEST_LIST = {
 #ifndef ASTERISM_NO_THREADS
   TEST_ENTRY(approval_binds_payload_and_is_durable_before_execution),
   TEST_ENTRY(session_grants_cannot_authorize_a_replaced_package),
+  TEST_ENTRY(tainted_turns_ignore_standing_grants),
   TEST_ENTRY(changed_workspace_invalidates_an_approved_request),
   TEST_ENTRY(failed_approval_write_never_releases_the_action),
   TEST_ENTRY(approval_contains_the_expanded_artifact),
@@ -333,6 +407,7 @@ TEST_LIST = {
   TEST_ENTRY(synchronous_missing_decision_finishes_without_execution),
 #endif
   TEST_ENTRY(reviewed_fields_cannot_change_during_a_decision),
+  TEST_ENTRY(tainted_mutation_is_denied_without_a_prompt),
   TEST_ENTRY(interrupted_approvals_reopen_without_replaying_tools)
 };
 RUN_ALL_TESTS()

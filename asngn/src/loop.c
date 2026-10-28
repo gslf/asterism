@@ -48,7 +48,8 @@ asngn_err asngn_loop_run(asngn_ctx *c, asngn_turn_state *t) {
 
   memset(&probe, 0, sizeof probe);
   os_rwlock_wrlock(&s->lock);
-  e=asngn_workspace_info_refresh(c,&s->workspace);
+  e=asngn_session_project_sync(c,s);
+  if (e==ASNGN_OK) e=asngn_workspace_info_refresh(c,&s->workspace);
   if (e==ASNGN_OK) c->workspace=s->workspace;
   os_rwlock_wrunlock(&s->lock);
   if (e==ASNGN_OK) e=asngn_modules_workspace_sync(c,c->workspace.canonical_root);
@@ -90,6 +91,7 @@ asngn_err asngn_loop_run(asngn_ctx *c, asngn_turn_state *t) {
     ut.n = user_n;
     snprintf(ut.role, sizeof ut.role, "user");
     ut.text = t->user_msg;
+    ut.origin = t->opts.origin;
     ut.at = core_clock_now(&c->clock);
     snprintf(ut.workspace,sizeof ut.workspace,"%s",s->workspace.canonical_root);
     snprintf(ut.commit,sizeof ut.commit,"%s",s->workspace.head);
@@ -424,6 +426,7 @@ asngn_err asngn_loop_run(asngn_ctx *c, asngn_turn_state *t) {
     free(s->last_user_msg);
     free(s->last_answer);
     s->last_user_msg = core_strdup(t->user_msg);
+    s->last_origin = t->opts.origin;
     s->last_answer = core_strdup(t->answer != NULL ? t->answer : "");
     s->last_capped = t->capped;
     s->last_answer_turn = t->led.turn;

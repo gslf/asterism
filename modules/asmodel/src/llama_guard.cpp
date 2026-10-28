@@ -195,3 +195,29 @@ extern "C" void asmodel_llg_memory_clear(llama_memory_t mem, bool data) {
     llg_report("memory_clear", nullptr);
   }
 }
+
+extern "C" size_t asmodel_llg_state_seq_get(struct llama_context *ctx, uint8_t *dst,
+                                          size_t size, llama_seq_id seq_id,
+                                          llama_state_seq_flags flags) {
+  try {
+    return llama_state_seq_get_data_ext(ctx, dst, size, seq_id, flags);
+  } catch (const std::exception &e) {
+    llg_report("state_seq_get", e.what());
+  } catch (...) {
+    llg_report("state_seq_get", nullptr);
+  }
+  return 0;
+}
+
+extern "C" size_t asmodel_llg_state_seq_set(struct llama_context *ctx, const uint8_t *src,
+                                          size_t size, llama_seq_id seq_id,
+                                          llama_state_seq_flags flags) {
+  try {
+    return llama_state_seq_set_data_ext(ctx, src, size, seq_id, flags);
+  } catch (const std::exception &e) {
+    llg_report("state_seq_set", e.what());
+  } catch (...) {
+    llg_report("state_seq_set", nullptr);
+  }
+  return 0;
+}

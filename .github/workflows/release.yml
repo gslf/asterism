@@ -1,0 +1,88 @@
+name: release
+
+# A tag v* builds the release archives that install.sh and install.ps1
+# download: asterism-<platform>.tar.gz (.zip on Windows) plus .sha256, with
+# the cmake --install layout inside. Models run on the CPU (Metal on Apple
+# Silicon); GPU builds come from ./install.sh --from-source.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the oldest glibc of the supported runners, so the binary runs on more systems
+          - { platform: linux-x86_64,   os: ubuntu-22.04,     flags: "" }
+          - { platform: linux-arm64,    os: ubuntu-24.04-arm, flags: "" }
+          - { platform: macos-arm64,    os: macos-14,         flags: "-DGGML_METAL=ON" }
+          - { platform: macos-x86_64,   os: macos-13,         flags: "" }
+          - { platform: windows-x86_64, os: windows-latest,   flags: "-DASLINK_TRANSPORT=winhttp" }
+    steps:
+      - uses: actions/checkout@v7
+        with: { submodules: recursive }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install libcurl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DASTERISM_WITH_LLAMA=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
+          -DASTERISM_PACKAGE_PLATFORM=${{ matrix.platform }} ${{ matrix.flags }}
+      - name: Build
+        run: cmake --build build --config Release -j 4
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure -E "real_model"
+      - name: Package
+        working-directory: build
+        run: cpack -C Release
+      - name: Smoke test the archive
+        shell: bash
+        run: |
+          mkdir smoke
+          if [ "${{ runner.os }}" = Windows ]; then
+            unzip -q build/asterism-${{ matrix.platform }}.zip -d smoke
+            exe=smoke/asterism-${{ matrix.platform }}/bin/asterism.exe
+          else
+            tar -xzf build/asterism-${{ matrix.platform }}.tar.gz -C smoke
+            exe=smoke/asterism-${{ matrix.platform }}/bin/asterism
+          fi
+          "$exe" --version
+          "$exe" setup --help
+          ls smoke/asterism-${{ matrix.platform }}/share/asterism/tools
+          if [ "${{ runner.os }}" = Linux ]; then ldd "$exe"; fi
+          if [ "${{ runner.os }}" = macOS ]; then otool -L "$exe"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asterism-${{ matrix.platform }}
+          path: |
+            build/asterism-${{ matrix.platform }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" \
+            --title "asterism ${{ github.ref_name }}" --generate-notes

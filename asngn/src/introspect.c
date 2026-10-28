@@ -216,21 +216,40 @@ asngn_err asngn_recall(asngn_ctx *c, const char *question, char **out) {
 }
 
 asngn_err asngn_session_project(asngn_session *s, const char *slug) {
-  asngn_err e;char *copy;
+  asngn_err e;char *copy,*old;asngn_project_info p;
+  asngn_workspace_info ws;asngn_usage_mode mode;asngn_security_profile prof;
+  bool folder;
   if (!s || (slug && !core_slug_valid(slug))) return ASNGN_ERR_INVALID;
+  folder=slug && asngn_project_lookup(s->ctx,slug,&p)==ASNGN_OK;
+  if (folder && !s->ctx->session_workspaces)
+    return asngn_seterr(s->ctx,ASNGN_ERR_UNSUPPORTED,
+        "project %s: this engine works in one fixed workspace (%s); "
+        "projects need session workspaces",slug,s->ctx->workspace.canonical_root);
   copy=slug ? core_strdup(slug) : NULL;
   if (slug && !copy) return ASNGN_ERR_NOMEM;
   os_rwlock_wrlock(&s->lock);
   if (s->busy) { os_rwlock_wrunlock(&s->lock);free(copy);return ASNGN_ERR_BUSY; }
   e=asngn_modules_project(s->ctx,slug);
   if (e==ASNGN_OK || e==ASNGN_ERR_UNSUPPORTED) {
-    free(s->project);s->project=copy;copy=NULL;e=asngn_session_save_manifest(s);
+    old=s->project;ws=s->workspace;mode=s->usage_mode;prof=s->security_profile;
+    s->project=copy;
+    /* the folder follows the project; working in one needs tools */
+    e=asngn_session_project_sync(s->ctx,s);
+    if (e==ASNGN_OK && folder && s->usage_mode==ASNGN_USAGE_CHAT) {
+      s->usage_mode=ASNGN_USAGE_CODING;
+      s->security_profile=ASNGN_SECURITY_CODING_SANDBOXED;
+    }
+    if (e==ASNGN_OK) e=asngn_session_save_manifest(s);
+    if (e==ASNGN_OK) { copy=old; }
+    else {
+      s->project=old;s->workspace=ws;s->usage_mode=mode;s->security_profile=prof;
+    }
   }
   os_rwlock_wrunlock(&s->lock);free(copy);return e;
 }
 
-asngn_err asngn_project_list(asngn_ctx *c, char ***out_slugs,
-                             size_t *out_n) {
+asngn_err asngn_memory_project_list(asngn_ctx *c, char ***out_slugs,
+                                    size_t *out_n) {
   char **slugs = NULL;
   size_t n = 0, i;
   char **copy;

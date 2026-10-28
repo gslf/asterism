@@ -28,7 +28,7 @@ static asmodel_err mu_wait(os_mutex *mu, int64_t deadline, volatile int *cancel)
 typedef struct {
   asmodel_spec spec;
   char id[ASMODEL_ID_MAX];
-  char *path, *base_url, *remote_model, *api_key_env;
+  char *path, *base_url, *remote_model, *api_key_env, *auth_file;
   asmodel_provider provider;
   os_mutex call_mu;
   int resident, in_use;
@@ -159,6 +159,8 @@ const char *asmodel_err_name(asmodel_err e) {
     case ASMODEL_ERR_UNSUPPORTED: return "ASMODEL_ERR_UNSUPPORTED";
     case ASMODEL_ERR_CANCELLED: return "ASMODEL_ERR_CANCELLED";
     case ASMODEL_ERR_TIMEOUT: return "ASMODEL_ERR_TIMEOUT";
+    case ASMODEL_ERR_AUTH: return "ASMODEL_ERR_AUTH";
+    case ASMODEL_ERR_QUOTA: return "ASMODEL_ERR_QUOTA";
     default: return "ASMODEL_ERR_UNKNOWN";
   }
 }
@@ -188,7 +190,7 @@ void asmodel_manager_destroy(asmodel_manager *m) {
     unload_slot(s);
     os_mutex_destroy(&s->call_mu);
     free(s->path); free(s->base_url); free(s->remote_model);
-    free(s->api_key_env);
+    free(s->api_key_env); free(s->auth_file);
   }
   free(m->slots);
   os_mutex_unlock(&m->mu);
@@ -229,11 +231,13 @@ asmodel_err asmodel_manager_register(asmodel_manager *m,
   s->base_url = dupstr(spec->base_url);
   s->remote_model = dupstr(spec->remote_model);
   s->api_key_env = dupstr(spec->api_key_env);
+  s->auth_file = dupstr(spec->auth_file);
   if ((spec->path && !s->path) || (spec->base_url && !s->base_url) ||
       (spec->remote_model && !s->remote_model) ||
-      (spec->api_key_env && !s->api_key_env)) {
+      (spec->api_key_env && !s->api_key_env) ||
+      (spec->auth_file && !s->auth_file)) {
     free(s->path); free(s->base_url); free(s->remote_model);
-    free(s->api_key_env);
+    free(s->api_key_env); free(s->auth_file);
     os_mutex_unlock(&m->mu);
     return ASMODEL_ERR_NOMEM;
   }
@@ -241,6 +245,7 @@ asmodel_err asmodel_manager_register(asmodel_manager *m,
   s->spec.id = s->id; s->spec.path = s->path;
   s->spec.base_url = s->base_url; s->spec.remote_model = s->remote_model;
   s->spec.api_key_env = s->api_key_env;
+  s->spec.auth_file = s->auth_file;
   os_mutex_init(&s->call_mu);
   m->slots_n++;
   os_mutex_unlock(&m->mu);
@@ -405,7 +410,7 @@ asmodel_err asmodel_generate(asmodel_manager *m, const char *id,
   if (cancel && *cancel) { info->finish_reason = ASMODEL_FINISH_CANCELLED; return ASMODEL_ERR_CANCELLED; }
   if (deadline && os_monotonic_ms() >= deadline) { info->finish_reason = ASMODEL_FINISH_ERROR; return ASMODEL_ERR_TIMEOUT; }
   if (rc == ASMODEL_OK) return ASMODEL_OK;
-  if (rc >= ASMODEL_ERR_INVALID && rc <= ASMODEL_ERR_TIMEOUT)
+  if (rc >= ASMODEL_ERR_INVALID && rc <= ASMODEL_ERR_QUOTA)
     return seterr(m, (asmodel_err)rc, "generation failed for '%s'%s%s", id,
                   detail[0] ? ": " : "", detail);
   return seterr(m, ASMODEL_ERR_BACKEND, "generation failed for '%s'%s%s", id,
@@ -440,7 +445,7 @@ asmodel_err asmodel_embed(asmodel_manager *m, const char *id,
   else if (e == ASMODEL_OK) {
     result->usage_known = 0;
     int rc = s->provider.embed(s->provider.userdata,(const char *const *)prepared,count,is_query,&request,out);
-    e = rc >= ASMODEL_OK && rc <= ASMODEL_ERR_TIMEOUT ? (asmodel_err)rc : ASMODEL_ERR_BACKEND;
+    e = rc >= ASMODEL_OK && rc <= ASMODEL_ERR_QUOTA ? (asmodel_err)rc : ASMODEL_ERR_BACKEND;
     if (result->completed > count || (e == ASMODEL_OK && result->completed != count) ||
         result->input_tokens < 0) {
       result->completed = 0; result->usage_known = 0; e = ASMODEL_ERR_BACKEND;
@@ -528,6 +533,16 @@ int asmodel_remote_capabilities(asmodel_remote_provider provider,
     flags |= ASMODEL_CAP_GBNF | ASMODEL_CAP_JSON_SCHEMA |
              ASMODEL_CAP_ACTION_SCHEMA | ASMODEL_CAP_REASONING_OFF |
              ASMODEL_CAP_USAGE_REASONING;
+    break;
+  case ASMODEL_REMOTE_CHATGPT:
+    /* Responses API on the user's ChatGPT plan: strict JSON Schema through
+     * text.format; reasoning effort per call, verified by reported usage. */
+    name = "chatgpt";
+    profile = "siwc-responses-v1";
+    flags |= ASMODEL_CAP_JSON_SCHEMA | ASMODEL_CAP_ACTION_SCHEMA |
+             ASMODEL_CAP_REASONING_OFF | ASMODEL_CAP_REASONING_ON |
+             ASMODEL_CAP_USAGE_REASONING;
+    if (embedding) return -1;
     break;
   case ASMODEL_REMOTE_AUTO:
   case ASMODEL_REMOTE_GENERIC:

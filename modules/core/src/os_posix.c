@@ -4,7 +4,7 @@
  * Threads via pthreads (compiled out under ASTERISM_NO_THREADS — os_common.c
  * then provides the no-op set). Atomic replace via rename(2). Compiles on
  * Linux and macOS/BSD; the only divergence is the CSPRNG (arc4random_buf
- * where available, /dev/urandom elsewhere, seeded rand() as last resort).
+ * where available, /dev/urandom elsewhere; no source aborts).
  */
 
 #if !defined(_WIN32)
@@ -209,6 +209,14 @@ int os_file_exists(const char *path)
     return stat(path, &st) == 0 ? 1 : 0;
 }
 
+int os_is_dir(const char *path)
+{
+    struct stat st;
+    if (path == NULL)
+        return 0;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
 core_err os_remove_file(const char *path)
 {
     if (path == NULL)
@@ -395,7 +403,7 @@ void os_sleep_ms(int ms)
 }
 
 
-/* /dev/urandom, falling back to seeded rand() (best effort). Compiled on
+/* /dev/urandom; aborts when it cannot be read. Compiled on
  * every POSIX platform so both paths stay warning-clean; used directly only
  * where arc4random_buf is unavailable. */
 static void os_random_fallback(void *buf, size_t n)
@@ -421,15 +429,9 @@ static void os_random_fallback(void *buf, size_t n)
             return;
     }
 
-    {
-        static int seeded = 0;
-        if (!seeded) {
-            srand((unsigned)(time(NULL) ^ (long)getpid() ^ (long)clock()));
-            seeded = 1;
-        }
-        for (; off < n; off++)
-            p[off] = (unsigned char)(rand() & 0xff);
-    }
+    /* Keys, nonces, pairing codes and UUIDs depend on this source: a
+     * predictable fallback would be worse than stopping. */
+    abort();
 }
 
 void os_random_bytes(void *buf, size_t n)

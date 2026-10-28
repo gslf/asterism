@@ -354,11 +354,13 @@ asngn_err asngn_session_append_turn(asngn_session *s, const asngn_turn *t) {
     }
     e = asngn_modules_object_put(c, line.data, line.len, object_ref);
     if (e == ASNGN_OK)
-      e = asngn_modules_event_append(
+      e = asngn_modules_event_append_from(
           c, s->slug,
           strcmp(t->role, "assistant") == 0 ? ASNGN_MEM_ASSISTANT
                                              : ASNGN_MEM_USER,
-          t->text ? t->text : "", object_ref, t->pinned, event_id);
+          t->text ? t->text : "", object_ref, t->pinned,
+          strcmp(t->role, "assistant") == 0 ? ASNGN_ORIGIN_HOST : t->origin,
+          event_id);
   } else {
     /* asper-disabled operation is intentionally ephemeral.  The in-memory
      * turn remains usable for this process, but ⁂ asngn never becomes a second
@@ -553,6 +555,11 @@ asngn_err asngn_session_load(asngn_ctx *c, const char *slug,
     e = asngn_workspace_info_init(c, wdir, &s->workspace);
     if (e != ASNGN_OK) goto fail;
     s->workspace_loaded = true;
+    /* A missing project folder must not lock the session out: the turn
+     * reports it, and the session can still change project. */
+    if (asngn_session_project_sync(c, s) != ASNGN_OK)
+      asngn_log(c, ASNGN_LOG_WARN, "session", "session %s: %s", slug,
+                asngn_last_error(c));
   } else if (s->workspace_loaded &&
       strcmp(s->workspace.canonical_root, c->workspace.canonical_root) != 0) {
     e = asngn_seterr(c, ASNGN_ERR_CONFIG,

@@ -1,0 +1,27 @@
+{"ok":true,"result":[
+ {"update_id":20,"message":{"message_id":30,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001700,
+  "photo":[
+   {"file_id":"AgACAgQAAxkBAAIBsmall","file_unique_id":"AQADs","file_size":1393,"width":90,"height":51},
+   {"file_id":"AgACAgQAAxkBAAIBmedium","file_unique_id":"AQADm","file_size":21508,"width":320,"height":180},
+   {"file_id":"AgACAgQAAxkBAAIBlarge","file_unique_id":"AQADl","file_size":96712,"width":1280,"height":720},
+   {"file_id":"AgACAgQAAxkBAAIBmid2","file_unique_id":"AQADx","file_size":51000,"width":800,"height":450}],
+  "caption":"See <this> & that"}},
+ {"update_id":21,"message":{"message_id":31,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001701,
+  "voice":{"duration":7,"mime_type":"audio/ogg","file_id":"AwACAgQAAxkBAAIBvoice","file_unique_id":"AgADv","file_size":28412}}},
+ {"update_id":22,"message":{"message_id":32,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001702,
+  "audio":{"duration":215,"performer":"Band","title":"Song","file_name":"song.mp3","mime_type":"audio/mpeg",
+   "file_id":"CQACAgQAAxkBAAIBaudio","file_unique_id":"AgADa","file_size":3441029}}},
+ {"update_id":23,"message":{"message_id":33,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001703,
+  "document":{"file_name":"café report.pdf","mime_type":"application/pdf",
+   "thumbnail":{"file_id":"AAMCthumb","file_unique_id":"AQADt","file_size":5000,"width":320,"height":240},
+   "file_id":"BQACAgQAAxkBAAIBdoc","file_unique_id":"AgADd","file_size":5242880},
+  "caption":"the report"}},
+ {"update_id":24,"message":{"message_id":34,"from":{"id":5,"is_bot":false,"first_name":"Ann"},
+  "chat":{"id":5,"type":"private"},"date":1793001704,
+  "sticker":{"file_id":"CAACsticker","file_unique_id":"AgADs","type":"regular","width":512,"height":512,
+   "is_animated":false,"is_video":false}}}
+]}

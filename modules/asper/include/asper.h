@@ -75,6 +75,26 @@ typedef enum {
   ASPER_EVENT_ARTIFACT
 } asper_event_kind;
 
+/* Who produced an event's text. HOST keeps the historic meaning: host- or
+ * owner-authored and trusted. Every later origin is untrusted data: context
+ * views label it and give it a bounded share of the history budget, and the
+ * curator never promotes it into semantic records. */
+typedef enum {
+  ASPER_ORIGIN_HOST = 0,
+  ASPER_ORIGIN_OWNER,       /* typed by the authenticated owner on a channel */
+  ASPER_ORIGIN_FORWARDED,   /* forwarded or quoted by the owner: data, not orders */
+  ASPER_ORIGIN_THIRD_PARTY, /* any other sender                           */
+  ASPER_ORIGIN_WEB,         /* fetched network content                    */
+  ASPER_ORIGIN_DELEGATE,    /* output of a delegated external agent       */
+  ASPER_ORIGIN_AGENT        /* another asterism agent                     */
+} asper_origin;
+#define ASPER_ORIGIN_LAST ASPER_ORIGIN_AGENT
+
+/* Stable lowercase name ("host", "owner", "forwarded", ...). */
+const char *asper_origin_name(asper_origin origin);
+/* 1 for HOST and OWNER, 0 for every untrusted origin. */
+int asper_origin_trusted(asper_origin origin);
+
 typedef struct {
   const char *scope;
   asper_event_kind kind;
@@ -82,6 +102,7 @@ typedef struct {
   const char *object_ref; /* optional sha256:<hex> source object; for user/assistant
                           * events without one, runtime captures the active project */
   int pinned;
+  asper_origin origin;    /* zero (HOST) for host-authored events */
 } asper_event_input;
 
 typedef struct {
@@ -92,6 +113,7 @@ typedef struct {
   char *text;             /* asper_events_free */
   char object_ref[72];
   int pinned;
+  asper_origin origin;
 } asper_event;
 
 /* Synchronous and durable.  Success means the exact event is in the scoped

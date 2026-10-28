@@ -72,6 +72,21 @@ if(NOT WIN32)
   add_dependencies(astools_test_library astools_tool_library)
 endif()
 
+# Delegate (official agent CLIs): event parsers and the streaming runner,
+# then end to end through "tools invoke" against fake claude/codex scripts.
+if(NOT WIN32)
+  astools_test(delegate_events SOURCES ../std/delegate_events.c
+    ../std/delegate_run.c ../std/process_capture.c)
+  if(Python3_FOUND)
+    add_test(NAME astools.delegate
+      COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_delegate.py
+              --cli $<TARGET_FILE:astools_tool_cli> --packages ${CMAKE_BINARY_DIR}/packages
+              --fake ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_agent.py)
+    set_tests_properties(astools.delegate PROPERTIES TIMEOUT 180
+      ENVIRONMENT "${ASTOOLS_TEST_ENV}")
+  endif()
+endif()
+
 # Persistent runtimes: process pool, LSP and MCP clients.
 if(NOT WIN32 AND NOT ASTERISM_NO_THREADS)
   astools_tool(persistent)

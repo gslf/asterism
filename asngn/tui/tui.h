@@ -452,6 +452,8 @@ typedef struct tui_app {
   tui_queue  q;
 
   char slug[72];
+  char project[65];                          /* session's project or ""  */
+  char project_dir[ASNGN_WORKSPACE_PATH_MAX]; /* its folder; "" = memory */
   int  pane;       /* active sidebar pane */
   int  sidebar_on;
   int  help_on;

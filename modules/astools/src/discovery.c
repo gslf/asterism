@@ -1,4 +1,7 @@
-/* Bounded lexical discovery. Scores rank metadata, never permission grants. */
+/* Bounded lexical discovery. Scores rank metadata, never permission grants.
+ * Query words are compared with metadata words by stem, so "files" finds
+ * "file" while "in" no longer finds "insert"; English stopwords carry no
+ * signal and are skipped. */
 #include "discovery.h"
 #include <stdlib.h>
 #include <string.h>
@@ -8,38 +11,96 @@ typedef struct {
   size_t cost;
   int score;
 } candidate;
+#define QUERY_TERMS 32 /* one match bit each */
+#define TERM_MAX 48
+typedef struct {
+  char stem[QUERY_TERMS][TERM_MAX];
+  size_t count;
+} query_terms;
 static int folded(unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c; }
-static int contains(const char *text, const char *term, size_t n) {
-  if (!text) return 0;
-  size_t len = strlen(text);
-  if (len > 4096) len = 4096;
-  for (size_t i = 0; i + n <= len; i++) {
-    size_t j = 0;
-    while (j < n && folded((unsigned char)text[i + j]) == folded((unsigned char)term[j]))
-      j++;
-    if (j == n) return 1;
+static int word(unsigned char c) {
+  return c >= 128 || (c >= '0' && c <= '9') || (folded(c) >= 'a' && folded(c) <= 'z');
+}
+static void lower(const char *w, size_t n, char out[TERM_MAX]) {
+  for (size_t i = 0; i < n; i++)
+    out[i] = (char)folded((unsigned char)w[i]);
+  out[n] = '\0';
+}
+/* One common English suffix, keeping at least three letters. */
+static void strip_suffix(char *w) {
+  static const char *const suffixes[] = {"ing", "ed", "es", "s", "e"};
+  size_t n = strlen(w);
+  for (size_t i = 0; i < sizeof suffixes / sizeof suffixes[0]; i++) {
+    size_t k = strlen(suffixes[i]);
+    if (n >= k + 3 && !memcmp(w + n - k, suffixes[i], k)) {
+      w[n - k] = '\0';
+      return;
+    }
   }
+}
+static int stopword(const char *w) {
+  static const char *const words[] = {
+      "a",    "an",    "and",   "are",    "as",     "at",    "be",    "but",   "by",
+      "can",  "could", "do",    "does",   "for",    "from",  "has",   "have",  "how",
+      "i",    "if",    "in",    "into",   "is",     "it",    "its",   "me",    "my",
+      "no",   "not",   "of",    "on",     "or",     "our",   "please", "should", "so",
+      "that", "the",   "their", "them",   "then",   "there", "these", "they",  "this",
+      "those", "to",   "up",    "us",     "was",    "we",    "what",  "when",  "where",
+      "which", "who",  "why",   "will",   "with",   "would", "you",   "your"};
+  for (size_t i = 0; i < sizeof words / sizeof words[0]; i++)
+    if (!strcmp(w, words[i])) return 1;
   return 0;
 }
-static int word(unsigned char c) {
-  return c >= 128 || (c >= '0' && c <= '9') || (folded(c) >= 'a' && folded(c) <= 'z') || c == '_' ||
-         c == '-';
-}
-static int score(const char *query, const astools_manifest *m, const astools_cmd *cmd) {
-  int result = 0, terms = 0;
-  for (const char *p = query ? query : ""; *p && terms < 32;) {
+static void parse_query(const char *query, query_terms *q) {
+  q->count = 0;
+  for (const char *p = query ? query : ""; *p && q->count < QUERY_TERMS;) {
     while (*p && !word((unsigned char)*p))
       p++;
     const char *start = p;
     while (word((unsigned char)*p))
       p++;
-    size_t n = (size_t)(p - start);
-    if (n < 2) continue;
-    result += 12 * contains(m->id, start, n) + 12 * contains(cmd->name, start, n) +
-              3 * contains(cmd->summary, start, n) + contains(m->summary, start, n);
-    terms++;
+    size_t n = (size_t)(p - start), k;
+    if (n < 2 || n >= TERM_MAX) continue;
+    char *term = q->stem[q->count];
+    lower(start, n, term);
+    if (stopword(term)) continue;
+    strip_suffix(term);
+    for (k = 0; k < q->count && strcmp(q->stem[k], term); k++)
+      ;
+    if (k == q->count) q->count++;
   }
-  return result;
+}
+/* Bit i is set when query term i is among the stems of the text's words. */
+static uint32_t matches(const char *text, const query_terms *q) {
+  uint32_t found = 0;
+  size_t len = text ? strlen(text) : 0;
+  char term[TERM_MAX];
+  if (len > 4096) len = 4096;
+  for (size_t i = 0; i < len;) {
+    while (i < len && !word((unsigned char)text[i]))
+      i++;
+    size_t start = i;
+    while (i < len && word((unsigned char)text[i]))
+      i++;
+    if (i - start < 2 || i - start >= TERM_MAX) continue;
+    lower(text + start, i - start, term);
+    strip_suffix(term);
+    for (size_t k = 0; k < q->count; k++)
+      if (!strcmp(term, q->stem[k])) found |= (uint32_t)1 << k;
+  }
+  return found;
+}
+static int bits(uint32_t v) {
+  int n = 0;
+  for (; v; v &= v - 1)
+    n++;
+  return n;
+}
+static int score(const query_terms *q, const astools_manifest *m, const astools_cmd *cmd) {
+  if (!q->count) return 0;
+  return 12 * bits(matches(m->id, q)) + 12 * bits(matches(cmd->name, q)) +
+         3 * bits(matches(cmd->summary, q)) + bits(matches(cmd->description, q)) +
+         bits(matches(m->summary, q));
 }
 static int allowed(const astools_discovery_options *o, const char *id, const char *cmd) {
   if (!o->allow) return 1;
@@ -145,6 +206,8 @@ astools_err astools_discover(astools_ctx *c, const astools_discovery_options *op
   astools_tool **tools = NULL;
   size_t tools_n = 0, n = 0;
   candidate best[64] = {0};
+  query_terms query;
+  parse_query(o.intent, &query);
   os_rwlock_rdlock(&c->lock);
   astools_err e = astools_collect_tools(c, &tools, &tools_n);
   s->revision = c->registry_revision;
@@ -171,7 +234,7 @@ astools_err astools_discover(astools_ctx *c, const astools_discovery_options *op
       if (o.read_only && (!cmd->read_only || cmd->destructive)) continue;
       if (!allowed(&o, t->m->id, cmd->name) || !command_possible(cmd, &eff)) continue;
       s->candidates++;
-      int relevance = score(o.intent, t->m, cmd);
+      int relevance = score(&query, t->m, cmd);
       if (n == 64 && relevance <= best[n - 1].score) continue;
       char *schema = NULL;
       e = astools_jschema_input(cmd, &schema);

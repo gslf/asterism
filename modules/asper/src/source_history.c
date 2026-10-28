@@ -1,5 +1,8 @@
 /* Keep selected lines only. Old pins take priority; the remaining budget takes
- * the newest fitting events, then presentation restores ascending sequence. */
+ * the newest fitting events, then presentation restores ascending sequence.
+ * Untrusted events are labelled with their origin and together take at most
+ * a quarter of the history budget, so injected text cannot crowd out the
+ * owner's own words. */
 #include "source_internal.h"
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +12,7 @@ typedef struct { uint64_t sequence; char *text; } selected_line;
 typedef struct {
   selected_line *lines;
   size_t n, cap, bytes, tokens, byte_limit;
+  size_t untrusted_bytes, untrusted_tokens;
 } selection;
 
 size_t asper_source_tokens(const asper_context_request *request, const char *text) {
@@ -25,14 +29,22 @@ static const char *kind_name(asper_event_kind kind) {
 
 static asper_err select_event(selection *s, const asper_context_request *request,
                                const asper_event *event) {
+  bool untrusted = !asper_origin_trusted(event->origin);
   if (strlen(event->text) > s->byte_limit - s->bytes) return ASPER_OK;
   core_buf line; core_buf_init(&line);
-  asper_err e = asper_buf_printf(&line, "[%s:%s] %s", kind_name(event->kind), event->id, event->text);
+  asper_err e = untrusted
+      ? asper_buf_printf(&line, "[%s:%s untrusted:%s] %s", kind_name(event->kind),
+                         event->id, asper_origin_name(event->origin), event->text)
+      : asper_buf_printf(&line, "[%s:%s] %s", kind_name(event->kind), event->id, event->text);
   if (e == ASPER_OK && event->object_ref[0]) e = asper_buf_printf(&line, " [source %s]", event->object_ref);
   if (e == ASPER_OK) e = asper_buf_appendc(&line, '\n');
   if (e != ASPER_OK) { core_buf_free(&line); return e; }
   size_t cost = asper_source_tokens(request, line.data);
   if (cost > request->history_tokens - s->tokens || line.len > s->byte_limit - s->bytes) {
+    core_buf_free(&line); return ASPER_OK;
+  }
+  if (untrusted && (cost > request->history_tokens / 4 - s->untrusted_tokens ||
+                    line.len > s->byte_limit / 4 - s->untrusted_bytes)) {
     core_buf_free(&line); return ASPER_OK;
   }
   if (s->n == s->cap) {
@@ -43,6 +55,7 @@ static asper_err select_event(selection *s, const asper_context_request *request
     s->lines = rows; s->cap = cap;
   }
   s->bytes += line.len; s->tokens += cost;
+  if (untrusted) { s->untrusted_bytes += line.len; s->untrusted_tokens += cost; }
   s->lines[s->n++] = (selected_line){event->sequence, core_buf_detach(&line)};
   return ASPER_OK;
 }

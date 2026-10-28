@@ -14,7 +14,7 @@ set(ASNGN_UNIT_TESTS
   cache toolcache telemetry)
 set(ASNGN_INTEGRATION_TESTS
   task_record action_events engine_turns engine_guards tool_selection
-  native_actions approvals approval_replay evidence)
+  native_actions approvals approval_replay evidence secrets)
 
 foreach(name ${ASNGN_UNIT_TESTS} ${ASNGN_INTEGRATION_TESTS})
   if(name IN_LIST ASNGN_UNIT_TESTS)
@@ -101,10 +101,18 @@ endif()
 
 if(TARGET asterism)
   asngn_py_test(approval_mcp approval_mcp.py 60 $<TARGET_FILE:asterism>)
+  asngn_py_test(projects_mcp projects_mcp.py 120 $<TARGET_FILE:asterism>)
   asngn_py_test(work_mcp work_smoke.py 60 $<TARGET_FILE:asterism>)
   get_target_property(ASNGN_MODEL_LINKS asmodel INTERFACE_LINK_LIBRARIES)
   if(WIN32 OR "CURL::libcurl" IN_LIST ASNGN_MODEL_LINKS)
     asngn_py_test(native_wire native_wire.py 60 $<TARGET_FILE:asterism> $<TARGET_FILE:asngn_fake_tool>)
+  endif()
+  if(WIN32 OR "CURL::libcurl" IN_LIST ASNGN_MODEL_LINKS)
+    asngn_py_test(setup_e2e setup_e2e.py 240 $<TARGET_FILE:asterism>)
+  endif()
+  # The daemon end to end: fake Telegram and fake llama-server on loopback.
+  if(NOT WIN32 AND "CURL::libcurl" IN_LIST ASNGN_MODEL_LINKS)
+    asngn_py_test(serve_e2e serve_e2e.py 180 $<TARGET_FILE:asterism> ${CMAKE_BINARY_DIR}/packages)
   endif()
 endif()
 

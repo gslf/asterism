@@ -1,128 +1,62 @@
-# Architecture
+# How asterism is built
 
-One C99 project: an application, four modules and two third-party
-libraries, built by one CMake tree into one self-contained executable,
-`asterism`.
+asterism is one C program, `asterism`, built with CMake. Nothing else needs to
+be installed or kept running next to it.
 
-```
-asngn/           application
-  main.c         asterism: picks the mode from the first parameter
-  src/           engine (libasngn): sessions, turn loop, context, safety, accounting
-  tui/           default mode: terminal UI and one-shot --once
-  mcp/           asterism mcp: MCP server (stdio)
-  acp/           asterism acp: editor host, Agent Client Protocol (POSIX)
-modules/
-  core/          platform and utilities: threads, files, clocks, buffers, hashes, log
-  asmodel/       inference runtime: model pool, budgets, providers (HTTP, llama.cpp),
-                 and the JSON codec (asmodel_json)
-  asper/         memory: exact events, semantic records, bounded context
-  astools/       tools: registry, manifests, policy, sandbox, standard tools
-sdk/             Python and JavaScript clients of asterism mcp
-third_party/     xCDN-C, llama.cpp (git submodules)
-```
+## Folders
 
-```
-asngn ──► asper ──► asmodel ──► core
-  ├─────► astools ────────────► core
-  │          └────► asmodel_json
-  └─────► asmodel
-```
+| Folder | What is in it |
+|---|---|
+| `asngn/` | the application: the agent, the terminal chat, the Telegram daemon, the MCP server, setup |
+| `modules/core/` | basics everything shares: files, threads, hashing, logs |
+| `modules/asmodel/` | runs the models: local files through llama.cpp, or ChatGPT |
+| `modules/asper/` | the agent's memory |
+| `modules/astools/` | the tools, and the sandbox they run in |
+| `modules/aslink/` | Telegram |
+| `modules/astime/` | repeated and scheduled tasks |
+| `modules/asvault/` | encrypted passwords and tokens |
+| `sdk/` | Python and JavaScript clients |
+| `third_party/` | llama.cpp and xCDN-C, unchanged (git submodules) |
 
-Every module depends on `core`; nothing depends on the application.
+Each module is a separate library with its own header and its own tests.
+Modules never depend on the application.
 
-## Decisions
+## Where the data lives
 
-**One repository, one build, one version.**
-A change that crosses a module boundary lands in one commit and is tested as a
-whole. There are no pins, ABI checks or release manifests to keep in sync.
+Everything is in one folder, `~/asterism` by default:
 
-**One application, independent modules.**
-`asngn` is the only application. Each module is a static library with its own
-public header (`core.h`, `asmodel.h`, `asper.h`, `astools.h`), error codes and
-tests, and knows nothing about the application. Dependencies point one
-way. Every module can be built and tested alone; policy is composed in one place.
+| Path | What |
+|---|---|
+| `config.xcdn` | which models to use, and the settings |
+| `models/` | model files |
+| `tools/`, `astools.xcdn` | tools, and what they may do ([TOOLS.md](TOOLS.md)) |
+| `memory/` | what the agent remembers ([MEMORY.md](MEMORY.md)) |
+| `sessions/` | conversations; each has its own work folder |
+| `projects/`, `projects.xcdn` | projects |
+| `vault/` | encrypted secrets |
+| `serve.xcdn`, `serve/` | Telegram settings and state |
 
-**One platform layer.**
-Threads, files, clocks, buffers, SHA-256, UUIDs, time formats and the log sink
-exist once, in `core`, behind one header (`core.h`). Fallible core calls return
-`core_err`; each module maps it to its own error codes in one place (its
-`os.h` and internal header), so module code keeps a single error type.
-Platform code that only one module needs (process supervision in astools,
-private files in asper) stays in that module. The modules' tests share one
-harness (`core_test.h`).
+The files are plain text, written so that a crash never leaves one half
+written.
 
-**One JSON codec.**
-MCP, LSP and provider wire formats share one strict RFC 8259 codec,
-`asmodel_json`. It depends only on libc and is a library of its own, so
-astools speaks MCP and LSP without linking the model providers.
+## Rules the code follows
 
-**One executable, modes by parameter.**
-`asterism` is the only binary: terminal UI by default, `--once` for one
-headless turn, `mcp`, `acp`, `doctor` and `tools` as modes. The engine calls
-modules in-process and the binary embeds all project code and llama.cpp
-statically: no IPC between components, nothing to version or install
-separately. The strict sandbox re-executes the same binary in its internal
-`jail` mode to confine a tool before exec. The standard tools are the one
-exception: they ship as a tool package (`astools-std`), like any third-party
-tool.
-
-**One MCP server.**
-Only `asterism mcp` is exposed. Memory and tools are reached through the engine,
-which applies approvals, budgets, redaction and safety gates. A server per
-module would bypass that policy and repeat the same protocol code.
-
-**One model runtime.**
-`asmodel` holds every provider: OpenAI-compatible HTTP and embedded llama.cpp.
-The engine owns the pool and lends it to `asper`: curation uses the
-`compressor` role, retrieval the `embedder` role. `asper` never loads a model
-itself. Weights load once, under one RAM/VRAM budget and one consumption
-ledger, and embedded GGUF models and remote endpoints mix freely in one pool.
-
-**One engine root.**
-All state lives under one directory: `config.xcdn`, `memory/`, `tools/`,
-`sessions/`, `cache/`, `telemetry/`. Module settings stay in their own files
-(`asper.xcdn`, `astools.xcdn`), referenced from `config.xcdn`, because each
-module validates its own schema.
-
-**Constrained decisions.**
-The model answers one action per step (`call`, `discover`, `recall`, `open`,
-`think`, `clarify`, `answer`), enforced by a GBNF grammar or JSON Schema.
-Small local models stay on protocol, and every step is validated before it runs.
-
-**Exact memory first.**
-`asper` keeps every event verbatim in an append-only log. Semantic records are
-derived by a background curator. Each prompt receives a bounded view with
-explicit token accounting. Nothing is lost to summarisation; context size is a
-budget, not a hope.
-
-**Tools run out of process.**
-A tool is a directory: a `manifest.xcdn` (typed contract plus the text the
-model reads) and a binary. Permissions are deny-by-default: the manifest
-requests, the host grants, the effective set is the intersection. Each call
-runs in a child process with a scrubbed environment, a deadline, output caps
-and, at the strict level, kernel confinement where the platform provides it.
-A failing or hostile tool cannot crash the engine or exceed its grants, and
-tools can be written in any language. `asterism tools` checks, previews and
-invokes packages for tool authors.
-
-**Inspectable, crash-safe state.**
-State is xCDN text or append-only logs, written with atomic replace under a
-single-writer lock per store. A crash loses at most an uncommitted tail, which
-is detected on load.
-
-**Local front-ends only.**
-TUI, MCP and ACP are thin layers over `libasngn`; the SDKs drive
-`asterism mcp` over stdio. There is no network listener: the operating-system process is the
-trust boundary.
-
-**Third-party code is never patched.**
-xCDN-C and llama.cpp are submodules under `third_party/`, built unmodified.
-llama.cpp is optional (`ASTERISM_WITH_LLAMA=OFF` gives a remote-only, C-only
-build). Only `asmodel` touches it, and C++ exceptions stop at the C boundary
-(`llama_guard.cpp`). Upgrading a dependency is a submodule bump.
-
-**Tests need no weights.**
-Models are scripted fakes; tools run through the real registry with fixture
-tools. Python drives the checks where a process boundary is the subject (MCP,
-ACP, SDKs, sandbox, offline store maintenance). CTest names are
-`<module>.<test>`. The whole suite runs anywhere in seconds.
+- **Local first.** Small local models do the routine work. A subscription is
+  used only where `config.xcdn` says so.
+- **Tools are separate programs.** Each one gets only the permissions it
+  declares and you allow. A broken tool cannot crash the agent.
+- **It asks before acting.** Changing files, running commands or using the
+  internet needs your OK. Text from outside (forwarded messages, web pages,
+  other agents) is marked as untrusted; after reading it, the agent asks for
+  every such action, with no exceptions.
+- **Nothing listens on the network.** The agent fetches its Telegram messages
+  itself; no port is opened.
+- **The model never sees secrets.** It sees `{{secret:NAME}}`; only the tools
+  allowed to use a secret receive its value.
+- **Subscriptions only through official programs.** Codex and Claude Code run
+  as their own programs, with your own login.
+- **Projects keep work in one place.** A session works in its own folder, or
+  in a project's folder when you choose one. One task at a time per project.
+- **Tests need no models and no internet.** Models are faked and test servers
+  run on the same computer. `ctest --test-dir build` runs everything in
+  seconds.

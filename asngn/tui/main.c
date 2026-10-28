@@ -148,6 +148,11 @@ static void render_header(tui_app *a, tui_frame *f) {
   x += d_put(f, x, 0, th->star, TFG_ACCENT, TBG_DEFAULT, 0);
   x += d_put(f, x, 0, " ", TFG_DIM, TBG_DEFAULT, 0);
   x += d_putn(f, x, 0, a->slug, 24, TFG_BRIGHT, TBG_DEFAULT, 0);
+  if (a->project[0] != '\0') {
+    x += d_put(f, x, 0, " [", TFG_DIM, TBG_DEFAULT, 0);
+    x += d_putn(f, x, 0, a->project, 24, TFG_ACCENT, TBG_DEFAULT, 0);
+    x += d_put(f, x, 0, "]", TFG_DIM, TBG_DEFAULT, 0);
+  }
   snprintf(buf, sizeof buf, " %s %s/%s %s ", th->bullet,
            asngn_usage_mode_name(a->usage_mode),
            asngn_security_profile_name(a->security_profile), th->bullet);
@@ -477,6 +482,104 @@ static int busy_guard(tui_app *a) {
   return 0;
 }
 
+/* The open session's project and, when registered, its folder. */
+static void refresh_project(tui_app *a) {
+  asngn_session_peek_info pi;
+  asngn_project_info p;
+  a->project[0] = a->project_dir[0] = '\0';
+  if (asngn_session_peek(a->ctx, a->slug, &pi) != ASNGN_OK ||
+      pi.project[0] == '\0')
+    return;
+  snprintf(a->project, sizeof a->project, "%s", pi.project);
+  if (asngn_project_get(a->ctx, pi.project, &p) == ASNGN_OK)
+    snprintf(a->project_dir, sizeof a->project_dir, "%s", p.path);
+}
+
+/* Bind the session to a project (NULL: none) and say where it works. */
+static void project_bind(tui_app *a, const char *name) {
+  asngn_err e = asngn_session_project(a->ses, name);
+  if (e != ASNGN_OK) {
+    chat_systemf(&a->chat, "project failed: %s",
+                 e == ASNGN_ERR_INVALID ? "invalid project name"
+                 : e == ASNGN_ERR_BUSY  ? "a turn is running"
+                                        : asngn_last_error(a->ctx));
+    return;
+  }
+  (void)asngn_session_get_mode(a->ses, &a->usage_mode,
+                               &a->security_profile);
+  refresh_project(a);
+  refresh_stats(a);
+  if (name == NULL)
+    chat_systemf(&a->chat, "project off");
+  else if (a->project_dir[0] != '\0')
+    chat_systemf(&a->chat, "project %s %s working in %s", name,
+                 a->theme.bullet, a->project_dir);
+  else
+    chat_systemf(&a->chat, "project %s (memory only, no folder)", name);
+}
+
+/* /project [list] | new <name> [folder] | <name> | off | rm <name> */
+static void cmd_project(tui_app *a, char *arg) {
+  asngn_project_info *ps = NULL, p;
+  size_t n = 0, i;
+  char *rest = NULL, *path = NULL;
+  if (arg != NULL && (rest = strchr(arg, ' ')) != NULL) {
+    *rest++ = '\0';
+    while (*rest == ' ') rest++;
+    if (*rest == '\0') rest = NULL;
+  }
+  if (arg == NULL || strcmp(arg, "list") == 0) {
+    if (asngn_projects_list(a->ctx, &ps, &n) != ASNGN_OK) {
+      chat_systemf(&a->chat, "project failed: %s",
+                   asngn_last_error(a->ctx));
+      return;
+    }
+    if (n == 0)
+      chat_systemf(&a->chat, "no projects %s /project new <name> [folder]",
+                   a->theme.bullet);
+    for (i = 0; i < n; i++)
+      chat_systemf(&a->chat, "%s %s  %s",
+                   strcmp(ps[i].name, a->project) == 0 ? "*" : " ",
+                   ps[i].name, ps[i].path);
+    asngn_free(ps);
+    return;
+  }
+  if (busy_guard(a)) return;
+  if (strcmp(arg, "new") == 0) {
+    if (rest != NULL && (path = strchr(rest, ' ')) != NULL) {
+      *path++ = '\0';
+      while (*path == ' ') path++;
+      if (*path == '\0') path = NULL;
+    }
+    if (rest == NULL) {
+      chat_systemf(&a->chat, "usage: /project new <name> [folder]");
+    } else if (asngn_project_add(a->ctx, rest, path, &p) != ASNGN_OK) {
+      chat_systemf(&a->chat, "project failed: %s",
+                   asngn_last_error(a->ctx));
+    } else {
+      chat_systemf(&a->chat, "project %s created", p.name);
+      project_bind(a, p.name);
+    }
+  } else if (strcmp(arg, "rm") == 0) {
+    if (rest == NULL) {
+      chat_systemf(&a->chat, "usage: /project rm <name>");
+    } else if (asngn_project_get(a->ctx, rest, &p) != ASNGN_OK ||
+               asngn_project_remove(a->ctx, rest) != ASNGN_OK) {
+      chat_systemf(&a->chat, "project failed: %s",
+                   asngn_last_error(a->ctx));
+    } else {
+      chat_systemf(&a->chat,
+                   "project %s removed from the list; its folder stays: %s",
+                   p.name, p.path);
+      if (strcmp(a->project, p.name) == 0) project_bind(a, NULL);
+    }
+  } else if (strcmp(arg, "off") == 0 || strcmp(arg, "none") == 0) {
+    project_bind(a, NULL);
+  } else {
+    project_bind(a, arg);
+  }
+}
+
 /* Open (or create: slug NULL asks the engine for a fresh generated
  * slug) a session and rebuild the chat from its transcript. The chat is
  * never lost: switching back replays the full history from disk. */
@@ -500,6 +603,7 @@ static void switch_session(tui_app *a, const char *slug) {
   chat_systemf(&a->chat, "session %s", a->slug);
   chat_replay(a);
   refresh_stats(a);
+  refresh_project(a);
 }
 
 /* Fill the session-picker rows (list + per-slug peek), keeping the
@@ -795,19 +899,7 @@ static void handle_slash(tui_app *a, char *line) {
   } else if (strcmp(cmd, "/profile") == 0) {
     cmd_profile(a, arg);
   } else if (strcmp(cmd, "/project") == 0) {
-    if (arg == NULL) {
-      chat_systemf(&a->chat, "usage: /project <slug> | none");
-    } else {
-      const char *slug = strcmp(arg, "none") == 0 ? NULL : arg;
-      if (asngn_session_project(a->ses, slug) == ASNGN_OK) {
-        refresh_stats(a);
-        chat_systemf(&a->chat, "project %s",
-                     slug != NULL ? slug : "none");
-      } else {
-        chat_systemf(&a->chat, "project failed: %s",
-                     asngn_last_error(a->ctx));
-      }
-    }
+    cmd_project(a, arg);
   } else if (strcmp(cmd, "/detail") == 0) {
     if (arg == NULL) {
       chat_systemf(&a->chat, "usage: /detail terse|normal|rich|auto");
@@ -965,22 +1057,36 @@ static void complete(tui_app *a) {
     } else if (strcmp(buf, "/redact") == 0) {
       static const char *const R[] = {"off", "on"};
       complete_from(a, arg, R, 2, 0);
-    } else if (strcmp(buf, "/session") == 0 ||
-               strcmp(buf, "/project") == 0) {
-      int project = buf[1] == 'p';
+    } else if (strcmp(buf, "/session") == 0) {
       char **slugs = NULL;
       size_t n = 0;
       const char *cands[64];
       size_t nc = 0, i;
-      asngn_err e = project
-                        ? asngn_project_list(a->ctx, &slugs, &n)
-                        : asngn_session_list(a->ctx, &slugs, &n);
-      cands[nc++] = project ? "none" : "list";
+      asngn_err e = asngn_session_list(a->ctx, &slugs, &n);
+      cands[nc++] = "list";
       if (e == ASNGN_OK) {
         for (i = 0; i < n && nc < 64; i++) cands[nc++] = slugs[i];
       }
       complete_from(a, arg, cands, nc, 0);
       if (e == ASNGN_OK) asngn_strings_free(slugs, n);
+    } else if (strcmp(buf, "/project") == 0) {
+      /* registered projects first, then memory-only ones */
+      asngn_project_info *ps = NULL;
+      char **slugs = NULL;
+      size_t np = 0, n = 0, nc = 0, i, j;
+      const char *cands[64] = {"list", "new", "off", "rm"};
+      nc = 4;
+      if (asngn_projects_list(a->ctx, &ps, &np) != ASNGN_OK) np = 0;
+      for (i = 0; i < np && nc < 64; i++) cands[nc++] = ps[i].name;
+      if (asngn_memory_project_list(a->ctx, &slugs, &n) != ASNGN_OK) n = 0;
+      for (i = 0; i < n && nc < 64; i++) {
+        for (j = 0; j < np && strcmp(ps[j].name, slugs[i]) != 0; j++) {
+        }
+        if (j == np) cands[nc++] = slugs[i];
+      }
+      complete_from(a, arg, cands, nc, 0);
+      asngn_strings_free(slugs, n);
+      asngn_free(ps);
     }
   }
 }
@@ -1432,7 +1538,8 @@ static char *read_stdin_all(void) {
 
 static int run_once(const char *root, const char *config,
                     const char *workspace, int allow_degraded,
-                    const char *session, asngn_detail detail,
+                    const char *session, const char *project,
+                    asngn_detail detail,
                     int confirm_override, const char *message) {
   asngn_open_params p;
   asngn_ctx *c = NULL;
@@ -1472,7 +1579,15 @@ static int run_once(const char *root, const char *config,
                            ? ASNGN_CONFIRM_ALLOW
                            : ASNGN_CONFIRM_DENY;
 
-  e = asngn_session_open(c, session != NULL ? session : "main", &s);
+  e = asngn_session_open(c, session, &s);
+  if (e == ASNGN_OK && project != NULL) {
+    asngn_project_info pi;
+    e = asngn_session_project(s, project);
+    if (e != ASNGN_OK) asngn_session_close(s);
+    else if (asngn_project_get(c, project, &pi) != ASNGN_OK)
+      fprintf(stderr, "asterism: project %s has no folder (memory only)\n",
+              project);
+  }
   if (e != ASNGN_OK) {
     fprintf(stderr, "asterism: %s: %s\n", asngn_err_name(e),
             asngn_last_error(c));
@@ -1512,7 +1627,8 @@ static int run_once(const char *root, const char *config,
 
 static int run_interactive(const char *root, const char *config,
                            const char *workspace, int allow_degraded,
-                           const char *session, asngn_detail detail,
+                           const char *session, const char *project,
+                           asngn_detail detail,
                            int confirm_override) {
   asngn_open_params p;
   tui_app a;
@@ -1570,8 +1686,7 @@ static int run_interactive(const char *root, const char *config,
   if (!tui_locale_utf8()) theme_plain = 1; /* ASCII fallback */
   tui_theme_init(&a.theme, theme_plain);
 
-  e = asngn_session_open(a.ctx, session != NULL ? session : "main",
-                         &a.ses);
+  e = asngn_session_open(a.ctx, session, &a.ses);
   if (e != ASNGN_OK) {
     fprintf(stderr, "asterism: %s: %s\n", asngn_err_name(e),
             asngn_last_error(a.ctx));
@@ -1579,6 +1694,7 @@ static int run_interactive(const char *root, const char *config,
     return 1;
   }
   snprintf(a.slug, sizeof a.slug, "%s", asngn_session_slug(a.ses));
+  refresh_project(&a);
   (void)asngn_session_get_mode(a.ses, &a.usage_mode,
                                &a.security_profile);
 
@@ -1594,6 +1710,7 @@ static int run_interactive(const char *root, const char *config,
   refresh_stats(&a);
   welcome(&a);
   chat_replay(&a); /* resumed sessions show their full history */
+  if (project != NULL) project_bind(&a, project);
   a.dirty = a.structural = 1;
 
   while (!a.quit) {
@@ -1700,7 +1817,8 @@ void asngn_tui_usage(FILE *out) {
           "usage: asterism [--root <dir>] [--config <file>] "
           "[--workspace <dir>] [--allow-degraded] "
           "[--session <slug>]\n"
-          "                [--detail terse|normal|rich|auto] "
+          "                [--project <name>] "
+          "[--detail terse|normal|rich|auto] "
           "[--confirm prompt|deny|allow]\n"
           "                [--once \"<message>\"]\n"
           "\n"
@@ -1709,6 +1827,9 @@ void asngn_tui_usage(FILE *out) {
           "  --root <dir>       override engine root (default: ~/asterism)\n"
           "  --workspace <dir>  use an external workspace instead of the "
           "session workspace\n"
+          "  --project <name>   work in that project's folder (the session "
+          "defaults to\n"
+          "                     the project name)\n"
           "  --detail <level>   force the answer detail level\n"
           "  --confirm <mode>   destructive-tool confirmation policy "
           "(TUI default: prompt;\n"
@@ -1733,6 +1854,7 @@ int asngn_tui_main(int argc, char **argv) {
   const char *config = NULL;
   const char *workspace = NULL;
   const char *session = NULL;
+  const char *project = NULL;
   const char *once = NULL;
   asngn_detail detail = ASNGN_DETAIL_AUTO;
   int confirm_override = -1;
@@ -1750,6 +1872,8 @@ int asngn_tui_main(int argc, char **argv) {
       workspace = v;
     } else if ((v = arg_value(argc, argv, &i, "--session")) != NULL) {
       session = v;
+    } else if ((v = arg_value(argc, argv, &i, "--project")) != NULL) {
+      project = v;
     } else if ((v = arg_value(argc, argv, &i, "--detail")) != NULL) {
       if (strcmp(v, "terse") == 0) detail = ASNGN_DETAIL_TERSE;
       else if (strcmp(v, "normal") == 0) detail = ASNGN_DETAIL_NORMAL;
@@ -1789,11 +1913,12 @@ int asngn_tui_main(int argc, char **argv) {
   }
 
   if (frame_dump) return run_frame_dump(frame_dump == 2);
+  if (session == NULL) session = project != NULL ? project : "main";
   if (once != NULL)
     return run_once(root, config, workspace, allow_degraded,
-                    session, detail, confirm_override,
+                    session, project, detail, confirm_override,
                     once);
   return run_interactive(root, config, workspace, allow_degraded,
-                         session, detail,
+                         session, project, detail,
                          confirm_override);
 }

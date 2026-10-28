@@ -1,5 +1,6 @@
 /* Exercise provider decoding only: this target never opens a connection. */
 #include "openai_decode.h"
+#include "chatgpt.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -19,6 +20,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       if (calls.count > 32 || info.input_tokens < 0 || info.output_tokens < 0) abort();
       asmodel_tool_calls_clear(&calls); free(text);
     }
+  }
+  {
+    /* Responses SSE, fed in two pieces to exercise line assembly. */
+    asmodel_tool_calls calls = {0};
+    chatgpt_stream st;
+    chatgpt_stream_init(&st, &calls, 64);
+    chatgpt_stream_feed(&st, body, size / 2);
+    chatgpt_stream_feed(&st, body + size / 2, size - size / 2);
+    chatgpt_stream_end(&st);
+    if (calls.count > 32 || st.input_tokens < 0 || st.output_tokens < 0) abort();
+    free(chatgpt_stream_take_text(&st));
+    chatgpt_stream_free(&st);
+    asmodel_tool_calls_clear(&calls);
   }
   float vectors[8] = {0};
   int tokens = 0, known = 0;

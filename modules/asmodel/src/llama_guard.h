@@ -73,6 +73,13 @@ int32_t asmodel_llg_encode(struct llama_context *ctx, struct llama_batch batch);
  * clear surfaces on the next decode at worst). */
 void asmodel_llg_memory_clear(llama_memory_t mem, bool data);
 
+/* Same contracts as llama_state_seq_get_data_ext / llama_state_seq_set_data_ext;
+ * return 0 (llama's own failure value) if an exception was caught. */
+size_t asmodel_llg_state_seq_get(struct llama_context *ctx, uint8_t *dst, size_t size,
+                                 llama_seq_id seq_id, llama_state_seq_flags flags);
+size_t asmodel_llg_state_seq_set(struct llama_context *ctx, const uint8_t *src, size_t size,
+                                 llama_seq_id seq_id, llama_state_seq_flags flags);
+
 #ifdef __cplusplus
 }
 #endif

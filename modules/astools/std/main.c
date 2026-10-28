@@ -32,6 +32,7 @@ static const astd_tool_entry k_tools[] = {
   { "git", astd_tool_git },
   { "code", astd_tool_code },
   { "project", astd_tool_project },
+  { "delegate", astd_tool_delegate },
 };
 
 static void usage(void) {

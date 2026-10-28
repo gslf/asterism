@@ -1,5 +1,10 @@
+# Verified reference-model installer: downloads one tier of
+# models.manifest.tsv, pinned by revision and checked by size and SHA-256.
+# legacy matches the engine's built-in defaults; other tiers need
+# examples\<tier>.xcdn as <engine-root>\config.xcdn.
 param(
   [string]$Root = "$env:USERPROFILE\asterism",
+  [ValidateSet("legacy", "base", "standard", "plus")][string]$Tier = "legacy",
   [Alias("install-tools")][switch]$InstallTools,
   [switch]$Repair
 )
@@ -17,8 +22,11 @@ function Test-Verified([string]$Path, [long]$Size, [string]$Sha) {
 
 $rows = Get-Content -LiteralPath (Join-Path $here "models.manifest.tsv") |
   Where-Object { $_ -and -not $_.StartsWith("#") }
+$count = 0
 foreach ($row in $rows) {
-  $name, $sizeText, $sha, $url, $post = $row -split "`t"
+  $tiers, $name, $sizeText, $sha, $url, $post = $row -split "`t"
+  if (($tiers -split ",") -notcontains $Tier) { continue }
+  $count++
   $size = [long]$sizeText
   $dest = Join-Path $dir $name
   if ($post -eq "-" -and (Test-Verified $dest $size $sha)) {
@@ -65,6 +73,13 @@ foreach ($row in $rows) {
   if ($LASTEXITCODE -ne 0) { throw "GGUF postprocess failed: $name" }
   Move-Item -LiteralPath $destPart -Destination $dest -Force
   Write-Host "installed: $dest"
+}
+
+if ($count -eq 0) { throw "no models for tier: $Tier" }
+Write-Host "tier ${Tier}: $count verified models in $dir"
+if ($Tier -ne "legacy") {
+  $example = Join-Path (Join-Path (Split-Path -Parent $here) "examples") "$Tier.xcdn"
+  Write-Host "engine config for this tier: $example -> $(Join-Path $Root 'config.xcdn')"
 }
 
 if ($InstallTools) {

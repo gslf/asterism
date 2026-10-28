@@ -1,0 +1,557 @@
+// ⁂ astools standard suite — delegate: hand a task to an official agent CLI.
+// One busybox-style binary dispatched with `--tool delegate`. POSIX only:
+// the supervised streaming runner has no Windows backend yet.
+//
+// The delegate runs the user's own, unmodified Claude Code CLI (`claude`)
+// or OpenAI Codex CLI (`codex`) headless inside the workspace. The CLI
+// authenticates itself with the login the user made in a terminal (Claude
+// Pro/Max or ChatGPT plan): this tool never opens, reads or copies the CLIs'
+// credential files, never passes `claude --bare` (which ignores the
+// subscription login), never sets a user agent and never retries on a usage
+// or rate limit — it reports the limit instead.
+//
+// Host requirements (deny-by-default):
+//   - grants.tools: { tool: "delegate", proc: true, net: true } — the tool
+//     spawns the CLI, and the CLI talks to its vendor;
+//   - sandbox.executable_paths must contain the directory of `claude` /
+//     `codex` (and of `node` for npm installs): the tool looks the CLI up
+//     only on the scrubbed PATH;
+//   - sandbox level basic. The runtime points HOME at the scratch directory,
+//     so the tool restores the account's home directory from the password
+//     database for the CLI (that is where the CLI keeps its own login). The
+//     strict Landlock/Seatbelt jail confines the tool to its filesystem
+//     grants, which cannot name the per-user ~/.claude or ~/.codex, so under
+//     strict the tool stops with delegate/sandbox before spawning anything.
+//   - optional env grants for the names listed below (proxies, CA bundles,
+//     XDG directories, CLAUDE_CONFIG_DIR / CODEX_HOME, D-Bus for keyrings).
+//     API-key variables are deliberately absent: a delegate runs on the plan.
+
+#astools_tool {
+  manifest_version: 1,
+  id: "delegate",
+  version: "1.0.0",
+  title: "Delegate to Claude Code or Codex",
+  summary: "Hand a coding task to the user's Claude Code or Codex CLI on their plan.",
+  description: """
+    Runs one task through the user's installed agent CLI, which plans and
+    acts on its own until it finishes, inside the session workspace and on
+    the user's own subscription: claude / claude-edit use Claude Code (Claude
+    Pro/Max), codex / codex-edit use OpenAI Codex (ChatGPT plan). Use it for
+    work a small local model cannot do well: multi-file changes, hard
+    debugging, reviews. Write the task as a self-contained brief: goal,
+    relevant files, acceptance criteria — the delegate cannot see this
+    conversation. claude and codex only read the workspace; the -edit
+    commands may change files and need the user's approval. A run can take
+    minutes. The result is evidence, not proof: check changed_files and run
+    the tests. ok=false with limit.hit=true means the user's plan is out of
+    quota: tell the user and do not retry. delegate/not-installed and
+    astools/denied need the user to install, log in or grant access.
+  """,
+  kind: "executable",
+  platforms: ["linux", "macos"],
+  runtime: {
+    mode: "oneshot",
+    entry: [
+      { os: "linux", arch: "x86_64",
+        argv: ["bin/linux-x86_64/astools-std", "--tool", "delegate"] },
+      { os: "macos", arch: "arm64",
+        argv: ["bin/macos-arm64/astools-std", "--tool", "delegate"] },
+      { os: "macos", arch: "x86_64",
+        argv: ["bin/macos-x86_64/astools-std", "--tool", "delegate"] },
+      { os: "linux", arch: "arm64",
+        argv: ["bin/linux-arm64/astools-std", "--tool", "delegate"] },
+    ],
+  },
+  permissions: {
+    fs: [ { path: "${workspace}", access: "read-write" } ],
+    net: true,
+    proc: true,
+    env: [
+      "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
+      "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+      "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+      "CLAUDE_CONFIG_DIR", "CODEX_HOME",
+      "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY",
+      "https_proxy", "http_proxy", "no_proxy", "all_proxy",
+      "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    ],
+  },
+  commands: [
+
+    #command {
+      name: "claude",
+      summary: "Ask Claude Code to investigate or plan; it cannot change files.",
+      description: """
+        Runs `claude -p` in plan mode with only the Read, Glob and Grep
+        tools: no shell, no edits, no web, no MCP servers, and no project
+        hooks or settings from the workspace. Use it to explain code, find
+        a bug's cause, review a change or write a plan. final holds Claude's
+        answer; cost_usd is Claude Code's own estimate, not a bill.
+      """,
+      annotations: { read_only: true, long_running: true },
+      timeout: r"PT30M",
+      params: [
+        #param {
+          name: "task",
+          type: #type { kind: "string", min_len: 1, max_len: 32768 },
+          required: true,
+          description: "Self-contained brief: goal, files, acceptance criteria.",
+        },
+        #param {
+          name: "max_turns",
+          type: #type { kind: "integer", min: 1, max: 200 },
+          description: "Stop after this many agentic turns (default: no limit).",
+        },
+        #param {
+          name: "model",
+          type: #type { kind: "string", min_len: 1, max_len: 128 },
+          description: "Claude model alias or name, e.g. sonnet or opus (default: the CLI's).",
+        },
+      ],
+      returns: {
+        type: #type { kind: "object", fields: [
+          #param { name: "ok", type: #type { kind: "boolean" }, required: true,
+                   description: "The CLI finished the task without error." },
+          #param { name: "agent", type: #type { kind: "enum", values: ["claude-code", "codex"] },
+                   required: true, description: "Which CLI ran." },
+          #param { name: "mode", type: #type { kind: "enum", values: ["plan", "edit", "read-only"] },
+                   required: true, description: "Permission mode the CLI ran in." },
+          #param { name: "final", type: #type { kind: "string" }, required: true,
+                   description: "Final answer; without one, the last messages." },
+          #param { name: "final_truncated", type: #type { kind: "boolean" }, required: true,
+                   description: "final was cut at the output cap." },
+          #param { name: "turns", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Agentic turns reported by the CLI (0 if unknown)." },
+          #param { name: "duration_ms", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Wall-clock run time of the CLI." },
+          #param { name: "usage", description: "Token usage reported by the CLI.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens, cached ones included." },
+            #param { name: "output_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Output tokens." },
+            #param { name: "cached_input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens served from the prompt cache." },
+          ] } },
+          #param { name: "cost_usd", type: #type { kind: "number", min: 0 },
+                   description: "Claude Code's client-side cost estimate." },
+          #param { name: "session_id", type: #type { kind: "string" },
+                   description: "Claude Code session (claude --resume <id>)." },
+          #param { name: "thread_id", type: #type { kind: "string" },
+                   description: "Codex thread (codex exec resume <id>)." },
+          #param { name: "model", type: #type { kind: "string" },
+                   description: "Model reported by the CLI." },
+          #param { name: "limit", description: "A usage or rate limit was reported.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "hit", type: #type { kind: "boolean" }, required: true,
+                     description: "The limit stopped the run; do not retry." },
+            #param { name: "message", type: #type { kind: "string" }, required: true,
+                     description: "The CLI's limit message." },
+            #param { name: "resets_at", type: #type { kind: "datetime" },
+                     description: "When the limit window reopens, if reported." },
+          ] } },
+          #param { name: "changed_files", description: "Git status changes in the workspace during the run.",
+                   type: #type { kind: "array", item: #type { kind: "object", fields: [
+            #param { name: "path", type: #type { kind: "string" }, required: true,
+                     description: "Workspace-relative path." },
+            #param { name: "status", type: #type { kind: "string" }, required: true,
+                     description: "Porcelain XY after the run (M, A, D, ??, ...) or clean." },
+          ] } } },
+          #param { name: "changed_files_truncated", type: #type { kind: "boolean" },
+                   description: "More changes than listed." },
+          #param { name: "exit_code", type: #type { kind: "integer" }, required: true,
+                   description: "CLI exit status; negative = killed by signal." },
+          #param { name: "timed_out", type: #type { kind: "boolean" }, required: true,
+                   description: "Stopped at the invocation deadline." },
+          #param { name: "error", type: #type { kind: "string" },
+                   description: "Why ok is false." },
+          #param { name: "stderr_tail", type: #type { kind: "string" },
+                   description: "Last bytes of the CLI's stderr when ok is false." },
+          #param { name: "events", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "JSON events parsed from the CLI." },
+          #param { name: "malformed_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Output lines that were not JSON events (ignored)." },
+          #param { name: "oversized_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Events skipped for exceeding the line cap." },
+        ] },
+        description: "Outcome, final answer, usage and workspace evidence of the run.",
+      },
+      errors: [
+        { code: "delegate/not-installed", description: "The CLI is not on the tool PATH (sandbox.executable_paths)." },
+        { code: "delegate/sandbox", description: "The strict sandbox hides the account's home; delegates need sandbox level basic." },
+        { code: "delegate/bad-input", description: "Invalid task, model or max_turns." },
+        { code: "delegate/deadline", description: "Too little time left before the invocation deadline." },
+        { code: "delegate/execution-error", description: "The CLI could not be started or supervised." },
+        { code: "delegate/failed", description: "Internal error (out of memory, missing workspace)." },
+      ],
+      examples: [
+        #example {
+          title: "Find the cause of a failing test without touching files",
+          call: { task: "tests/test_auth.py::test_refresh fails with KeyError 'exp'. Find the root cause in src/auth/ and propose a minimal fix. Do not edit files." },
+          result: { ok: true, agent: "claude-code", mode: "plan",
+                    final: "The refresh path reads claims['exp'] before validating the token; ...",
+                    final_truncated: false, turns: 6, duration_ms: 48210,
+                    usage: { input_tokens: 51230, output_tokens: 1840, cached_input_tokens: 40960 },
+                    cost_usd: 0.21, session_id: "8f0c2d41-6f0c-4b7a-9d2e-3c1a5b7e9f02",
+                    changed_files: [], exit_code: 0, timed_out: false,
+                    events: 31, malformed_lines: 0, oversized_lines: 0 },
+        },
+      ],
+    },
+
+    #command {
+      name: "claude-edit",
+      summary: "Let Claude Code change files in the workspace (needs approval).",
+      description: """
+        Runs `claude -p` with acceptEdits and only the Read, Edit, Write,
+        Glob and Grep tools: it can create and edit files inside the
+        workspace but cannot run shell commands, browse the web or use MCP
+        servers, and workspace hooks and settings are ignored. It cannot
+        run the tests itself: run them afterwards (project.test) and review
+        changed_files.
+      """,
+      annotations: { destructive: true, long_running: true },
+      timeout: r"PT30M",
+      params: [
+        #param {
+          name: "task",
+          type: #type { kind: "string", min_len: 1, max_len: 32768 },
+          required: true,
+          description: "Self-contained brief: goal, files, acceptance criteria.",
+        },
+        #param {
+          name: "max_turns",
+          type: #type { kind: "integer", min: 1, max: 200 },
+          description: "Stop after this many agentic turns (default: no limit).",
+        },
+        #param {
+          name: "model",
+          type: #type { kind: "string", min_len: 1, max_len: 128 },
+          description: "Claude model alias or name, e.g. sonnet or opus (default: the CLI's).",
+        },
+      ],
+      returns: {
+        type: #type { kind: "object", fields: [
+          #param { name: "ok", type: #type { kind: "boolean" }, required: true,
+                   description: "The CLI finished the task without error." },
+          #param { name: "agent", type: #type { kind: "enum", values: ["claude-code", "codex"] },
+                   required: true, description: "Which CLI ran." },
+          #param { name: "mode", type: #type { kind: "enum", values: ["plan", "edit", "read-only"] },
+                   required: true, description: "Permission mode the CLI ran in." },
+          #param { name: "final", type: #type { kind: "string" }, required: true,
+                   description: "Final answer; without one, the last messages." },
+          #param { name: "final_truncated", type: #type { kind: "boolean" }, required: true,
+                   description: "final was cut at the output cap." },
+          #param { name: "turns", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Agentic turns reported by the CLI (0 if unknown)." },
+          #param { name: "duration_ms", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Wall-clock run time of the CLI." },
+          #param { name: "usage", description: "Token usage reported by the CLI.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens, cached ones included." },
+            #param { name: "output_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Output tokens." },
+            #param { name: "cached_input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens served from the prompt cache." },
+          ] } },
+          #param { name: "cost_usd", type: #type { kind: "number", min: 0 },
+                   description: "Claude Code's client-side cost estimate." },
+          #param { name: "session_id", type: #type { kind: "string" },
+                   description: "Claude Code session (claude --resume <id>)." },
+          #param { name: "thread_id", type: #type { kind: "string" },
+                   description: "Codex thread (codex exec resume <id>)." },
+          #param { name: "model", type: #type { kind: "string" },
+                   description: "Model reported by the CLI." },
+          #param { name: "limit", description: "A usage or rate limit was reported.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "hit", type: #type { kind: "boolean" }, required: true,
+                     description: "The limit stopped the run; do not retry." },
+            #param { name: "message", type: #type { kind: "string" }, required: true,
+                     description: "The CLI's limit message." },
+            #param { name: "resets_at", type: #type { kind: "datetime" },
+                     description: "When the limit window reopens, if reported." },
+          ] } },
+          #param { name: "changed_files", description: "Git status changes in the workspace during the run.",
+                   type: #type { kind: "array", item: #type { kind: "object", fields: [
+            #param { name: "path", type: #type { kind: "string" }, required: true,
+                     description: "Workspace-relative path." },
+            #param { name: "status", type: #type { kind: "string" }, required: true,
+                     description: "Porcelain XY after the run (M, A, D, ??, ...) or clean." },
+          ] } } },
+          #param { name: "changed_files_truncated", type: #type { kind: "boolean" },
+                   description: "More changes than listed." },
+          #param { name: "exit_code", type: #type { kind: "integer" }, required: true,
+                   description: "CLI exit status; negative = killed by signal." },
+          #param { name: "timed_out", type: #type { kind: "boolean" }, required: true,
+                   description: "Stopped at the invocation deadline." },
+          #param { name: "error", type: #type { kind: "string" },
+                   description: "Why ok is false." },
+          #param { name: "stderr_tail", type: #type { kind: "string" },
+                   description: "Last bytes of the CLI's stderr when ok is false." },
+          #param { name: "events", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "JSON events parsed from the CLI." },
+          #param { name: "malformed_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Output lines that were not JSON events (ignored)." },
+          #param { name: "oversized_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Events skipped for exceeding the line cap." },
+        ] },
+        description: "Outcome, final answer, usage and workspace evidence of the run.",
+      },
+      errors: [
+        { code: "delegate/not-installed", description: "The CLI is not on the tool PATH (sandbox.executable_paths)." },
+        { code: "delegate/sandbox", description: "The strict sandbox hides the account's home; delegates need sandbox level basic." },
+        { code: "delegate/bad-input", description: "Invalid task, model or max_turns." },
+        { code: "delegate/deadline", description: "Too little time left before the invocation deadline." },
+        { code: "delegate/execution-error", description: "The CLI could not be started or supervised." },
+        { code: "delegate/failed", description: "Internal error (out of memory, missing workspace)." },
+      ],
+      examples: [
+        #example {
+          title: "Apply a scoped fix",
+          call: { task: "In src/auth/refresh.py validate the token before reading claims['exp']; keep the public API unchanged. Acceptance: tests/test_auth.py passes.", max_turns: 30 },
+          result: { ok: true, agent: "claude-code", mode: "edit",
+                    final: "Moved validate_token() ahead of the claims lookup in refresh(); ...",
+                    final_truncated: false, turns: 9, duration_ms: 95102,
+                    usage: { input_tokens: 88410, output_tokens: 3120, cached_input_tokens: 70144 },
+                    cost_usd: 0.37, session_id: "1d3e5f70-2b4c-4d6e-8f90-a1b2c3d4e5f6",
+                    changed_files: [{ path: "src/auth/refresh.py", status: "M" }],
+                    exit_code: 0, timed_out: false,
+                    events: 54, malformed_lines: 0, oversized_lines: 0 },
+        },
+      ],
+    },
+
+    #command {
+      name: "codex",
+      summary: "Ask Codex to investigate in a read-only sandbox; it cannot change files.",
+      description: """
+        Runs `codex exec` with the read-only sandbox: Codex may read the
+        workspace and run commands that do not write, with no network for
+        those commands. Use it to explain code, diagnose a failure or review
+        a change. final holds Codex's last message.
+      """,
+      annotations: { read_only: true, long_running: true },
+      timeout: r"PT30M",
+      params: [
+        #param {
+          name: "task",
+          type: #type { kind: "string", min_len: 1, max_len: 32768 },
+          required: true,
+          description: "Self-contained brief: goal, files, acceptance criteria.",
+        },
+        #param {
+          name: "model",
+          type: #type { kind: "string", min_len: 1, max_len: 128 },
+          description: "Codex model name (default: the CLI's configured model).",
+        },
+      ],
+      returns: {
+        type: #type { kind: "object", fields: [
+          #param { name: "ok", type: #type { kind: "boolean" }, required: true,
+                   description: "The CLI finished the task without error." },
+          #param { name: "agent", type: #type { kind: "enum", values: ["claude-code", "codex"] },
+                   required: true, description: "Which CLI ran." },
+          #param { name: "mode", type: #type { kind: "enum", values: ["plan", "edit", "read-only"] },
+                   required: true, description: "Permission mode the CLI ran in." },
+          #param { name: "final", type: #type { kind: "string" }, required: true,
+                   description: "Final answer; without one, the last messages." },
+          #param { name: "final_truncated", type: #type { kind: "boolean" }, required: true,
+                   description: "final was cut at the output cap." },
+          #param { name: "turns", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Agentic turns reported by the CLI (0 if unknown)." },
+          #param { name: "duration_ms", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Wall-clock run time of the CLI." },
+          #param { name: "usage", description: "Token usage reported by the CLI.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens, cached ones included." },
+            #param { name: "output_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Output tokens." },
+            #param { name: "cached_input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens served from the prompt cache." },
+          ] } },
+          #param { name: "cost_usd", type: #type { kind: "number", min: 0 },
+                   description: "Claude Code's client-side cost estimate." },
+          #param { name: "session_id", type: #type { kind: "string" },
+                   description: "Claude Code session (claude --resume <id>)." },
+          #param { name: "thread_id", type: #type { kind: "string" },
+                   description: "Codex thread (codex exec resume <id>)." },
+          #param { name: "model", type: #type { kind: "string" },
+                   description: "Model reported by the CLI." },
+          #param { name: "limit", description: "A usage or rate limit was reported.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "hit", type: #type { kind: "boolean" }, required: true,
+                     description: "The limit stopped the run; do not retry." },
+            #param { name: "message", type: #type { kind: "string" }, required: true,
+                     description: "The CLI's limit message." },
+            #param { name: "resets_at", type: #type { kind: "datetime" },
+                     description: "When the limit window reopens, if reported." },
+          ] } },
+          #param { name: "changed_files", description: "Git status changes in the workspace during the run.",
+                   type: #type { kind: "array", item: #type { kind: "object", fields: [
+            #param { name: "path", type: #type { kind: "string" }, required: true,
+                     description: "Workspace-relative path." },
+            #param { name: "status", type: #type { kind: "string" }, required: true,
+                     description: "Porcelain XY after the run (M, A, D, ??, ...) or clean." },
+          ] } } },
+          #param { name: "changed_files_truncated", type: #type { kind: "boolean" },
+                   description: "More changes than listed." },
+          #param { name: "exit_code", type: #type { kind: "integer" }, required: true,
+                   description: "CLI exit status; negative = killed by signal." },
+          #param { name: "timed_out", type: #type { kind: "boolean" }, required: true,
+                   description: "Stopped at the invocation deadline." },
+          #param { name: "error", type: #type { kind: "string" },
+                   description: "Why ok is false." },
+          #param { name: "stderr_tail", type: #type { kind: "string" },
+                   description: "Last bytes of the CLI's stderr when ok is false." },
+          #param { name: "events", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "JSON events parsed from the CLI." },
+          #param { name: "malformed_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Output lines that were not JSON events (ignored)." },
+          #param { name: "oversized_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Events skipped for exceeding the line cap." },
+        ] },
+        description: "Outcome, final answer, usage and workspace evidence of the run.",
+      },
+      errors: [
+        { code: "delegate/not-installed", description: "The CLI is not on the tool PATH (sandbox.executable_paths)." },
+        { code: "delegate/sandbox", description: "The strict sandbox hides the account's home; delegates need sandbox level basic." },
+        { code: "delegate/bad-input", description: "Invalid task or model." },
+        { code: "delegate/deadline", description: "Too little time left before the invocation deadline." },
+        { code: "delegate/execution-error", description: "The CLI could not be started or supervised." },
+        { code: "delegate/failed", description: "Internal error (out of memory, missing workspace)." },
+      ],
+      examples: [
+        #example {
+          title: "Explain a crash from its stack trace",
+          call: { task: "Running ./build/app --import data.csv segfaults in parse_row (src/csv.c:212). Explain why and which input triggers it. Do not edit files." },
+          result: { ok: true, agent: "codex", mode: "read-only",
+                    final: "parse_row indexes fields[n] after the loop when a row ends with a delimiter; ...",
+                    final_truncated: false, turns: 1, duration_ms: 61877,
+                    usage: { input_tokens: 24763, output_tokens: 122, cached_input_tokens: 24448 },
+                    thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+                    changed_files: [], exit_code: 0, timed_out: false,
+                    events: 12, malformed_lines: 0, oversized_lines: 0 },
+        },
+      ],
+    },
+
+    #command {
+      name: "codex-edit",
+      summary: "Let Codex change files in the workspace sandbox (needs approval).",
+      description: """
+        Runs `codex exec` with the workspace-write sandbox: Codex may edit
+        files and run commands that write inside the workspace (for example
+        the tests), with network disabled for those commands. Review
+        changed_files and rerun the tests afterwards.
+      """,
+      annotations: { destructive: true, long_running: true },
+      timeout: r"PT30M",
+      params: [
+        #param {
+          name: "task",
+          type: #type { kind: "string", min_len: 1, max_len: 32768 },
+          required: true,
+          description: "Self-contained brief: goal, files, acceptance criteria.",
+        },
+        #param {
+          name: "model",
+          type: #type { kind: "string", min_len: 1, max_len: 128 },
+          description: "Codex model name (default: the CLI's configured model).",
+        },
+      ],
+      returns: {
+        type: #type { kind: "object", fields: [
+          #param { name: "ok", type: #type { kind: "boolean" }, required: true,
+                   description: "The CLI finished the task without error." },
+          #param { name: "agent", type: #type { kind: "enum", values: ["claude-code", "codex"] },
+                   required: true, description: "Which CLI ran." },
+          #param { name: "mode", type: #type { kind: "enum", values: ["plan", "edit", "read-only"] },
+                   required: true, description: "Permission mode the CLI ran in." },
+          #param { name: "final", type: #type { kind: "string" }, required: true,
+                   description: "Final answer; without one, the last messages." },
+          #param { name: "final_truncated", type: #type { kind: "boolean" }, required: true,
+                   description: "final was cut at the output cap." },
+          #param { name: "turns", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Agentic turns reported by the CLI (0 if unknown)." },
+          #param { name: "duration_ms", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Wall-clock run time of the CLI." },
+          #param { name: "usage", description: "Token usage reported by the CLI.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens, cached ones included." },
+            #param { name: "output_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Output tokens." },
+            #param { name: "cached_input_tokens", type: #type { kind: "integer", min: 0 }, required: true,
+                     description: "Input tokens served from the prompt cache." },
+          ] } },
+          #param { name: "cost_usd", type: #type { kind: "number", min: 0 },
+                   description: "Claude Code's client-side cost estimate." },
+          #param { name: "session_id", type: #type { kind: "string" },
+                   description: "Claude Code session (claude --resume <id>)." },
+          #param { name: "thread_id", type: #type { kind: "string" },
+                   description: "Codex thread (codex exec resume <id>)." },
+          #param { name: "model", type: #type { kind: "string" },
+                   description: "Model reported by the CLI." },
+          #param { name: "limit", description: "A usage or rate limit was reported.",
+                   type: #type { kind: "object", fields: [
+            #param { name: "hit", type: #type { kind: "boolean" }, required: true,
+                     description: "The limit stopped the run; do not retry." },
+            #param { name: "message", type: #type { kind: "string" }, required: true,
+                     description: "The CLI's limit message." },
+            #param { name: "resets_at", type: #type { kind: "datetime" },
+                     description: "When the limit window reopens, if reported." },
+          ] } },
+          #param { name: "changed_files", description: "Git status changes in the workspace during the run.",
+                   type: #type { kind: "array", item: #type { kind: "object", fields: [
+            #param { name: "path", type: #type { kind: "string" }, required: true,
+                     description: "Workspace-relative path." },
+            #param { name: "status", type: #type { kind: "string" }, required: true,
+                     description: "Porcelain XY after the run (M, A, D, ??, ...) or clean." },
+          ] } } },
+          #param { name: "changed_files_truncated", type: #type { kind: "boolean" },
+                   description: "More changes than listed." },
+          #param { name: "exit_code", type: #type { kind: "integer" }, required: true,
+                   description: "CLI exit status; negative = killed by signal." },
+          #param { name: "timed_out", type: #type { kind: "boolean" }, required: true,
+                   description: "Stopped at the invocation deadline." },
+          #param { name: "error", type: #type { kind: "string" },
+                   description: "Why ok is false." },
+          #param { name: "stderr_tail", type: #type { kind: "string" },
+                   description: "Last bytes of the CLI's stderr when ok is false." },
+          #param { name: "events", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "JSON events parsed from the CLI." },
+          #param { name: "malformed_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Output lines that were not JSON events (ignored)." },
+          #param { name: "oversized_lines", type: #type { kind: "integer", min: 0 }, required: true,
+                   description: "Events skipped for exceeding the line cap." },
+        ] },
+        description: "Outcome, final answer, usage and workspace evidence of the run.",
+      },
+      errors: [
+        { code: "delegate/not-installed", description: "The CLI is not on the tool PATH (sandbox.executable_paths)." },
+        { code: "delegate/sandbox", description: "The strict sandbox hides the account's home; delegates need sandbox level basic." },
+        { code: "delegate/bad-input", description: "Invalid task or model." },
+        { code: "delegate/deadline", description: "Too little time left before the invocation deadline." },
+        { code: "delegate/execution-error", description: "The CLI could not be started or supervised." },
+        { code: "delegate/failed", description: "Internal error (out of memory, missing workspace)." },
+      ],
+      examples: [
+        #example {
+          title: "Fix failing tests",
+          call: { task: "ctest reports test_csv_quotes failing. Fix the parser in src/csv.c so quoted delimiters are kept; run ctest --test-dir build to confirm. Do not change the tests." },
+          result: { ok: true, agent: "codex", mode: "edit",
+                    final: "Quoted fields are now scanned to the closing quote before splitting; ctest: 42/42 passed.",
+                    final_truncated: false, turns: 1, duration_ms: 182330,
+                    usage: { input_tokens: 96012, output_tokens: 4410, cached_input_tokens: 81920 },
+                    thread_id: "0199a3c4-1f2e-7a00-9b8c-5d6e7f809a1b",
+                    changed_files: [{ path: "src/csv.c", status: "M" }],
+                    exit_code: 0, timed_out: false,
+                    events: 47, malformed_lines: 0, oversized_lines: 0 },
+        },
+      ],
+    },
+
+  ],
+}

@@ -38,6 +38,7 @@ asngn_err asngn_approval_prepare(asngn_turn_state *t, const astools_selected_com
   snprintf(a->package_sha256, sizeof a->package_sha256, "%s", tool->content_sha256);
   snprintf(a->workspace, sizeof a->workspace, "%s", t->s->workspace.canonical_root);
   a->profile = t->security_profile;
+  a->taint = t->taint;
   uint8_t hash[32];
   core_sha256(args, strlen(args), hash);
   core_sha256_hex(hash, 32, a->arguments_sha256);

@@ -1,5 +1,6 @@
 #!/bin/sh
-# Verified reference-model installer.
+# Verified reference-model installer: downloads one tier of
+# models.manifest.tsv, pinned by revision and checked by size and SHA-256.
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -7,23 +8,39 @@ ROOT=${HOME}/asterism
 ROOT_SET=0
 INSTALL_TOOLS=0
 REPAIR=0
+# legacy matches the engine's built-in defaults; other tiers need
+# examples/<tier>.xcdn as <engine-root>/config.xcdn.
+TIER=legacy
 
-for arg in "$@"; do
-  case "$arg" in
+usage() {
+  echo "usage: scripts/fetch-models.sh [engine-root] [--tier legacy|base|standard|plus] [--repair] [--install-tools]"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
     --install-tools) INSTALL_TOOLS=1 ;;
     --repair) REPAIR=1 ;;
-    --help)
-      echo "usage: scripts/fetch-models.sh [engine-root] [--repair] [--install-tools]"
-      exit 0 ;;
-    --*) echo "unknown option: $arg" >&2; exit 2 ;;
+    --tier)
+      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      shift
+      TIER=$1 ;;
+    --tier=*) TIER=${1#--tier=} ;;
+    --help) usage; exit 0 ;;
+    --*) echo "unknown option: $1" >&2; exit 2 ;;
     *)
       if [ "$ROOT_SET" -eq 1 ]; then
         echo "only one engine-root may be supplied" >&2; exit 2
       fi
-      ROOT=$arg
+      ROOT=$1
       ROOT_SET=1 ;;
   esac
+  shift
 done
+
+case "$TIER" in
+  legacy|base|standard|plus) ;;
+  *) echo "unknown tier: $TIER (legacy, base, standard, plus)" >&2; exit 2 ;;
+esac
 
 DIR=$ROOT/models
 SOURCES=$DIR/.sources
@@ -43,8 +60,11 @@ verify() {
   [ "$(hash_file "$1")" = "$3" ]
 }
 
-while IFS="	" read -r name size sha url post; do
-  case "$name" in ''|'#'*) continue ;; esac
+COUNT=0
+while IFS="	" read -r tiers name size sha url post; do
+  case "$tiers" in ''|'#'*) continue ;; esac
+  case ",$tiers," in *",$TIER,"*) ;; *) continue ;; esac
+  COUNT=$((COUNT + 1))
   dest=$DIR/$name
   if [ "$post" = "-" ] && verify "$dest" "$size" "$sha"; then
     echo "verified: $dest"
@@ -88,6 +108,12 @@ while IFS="	" read -r name size sha url post; do
   mv -f -- "$dest.part" "$dest"
   echo "installed: $dest"
 done < "$HERE/models.manifest.tsv"
+
+[ "$COUNT" -gt 0 ] || { echo "no models for tier: $TIER" >&2; exit 1; }
+echo "tier $TIER: $COUNT verified models in $DIR"
+if [ "$TIER" != legacy ]; then
+  echo "engine config for this tier: $(dirname -- "$HERE")/examples/$TIER.xcdn -> $ROOT/config.xcdn"
+fi
 
 if [ "$INSTALL_TOOLS" -eq 1 ]; then
   PKG=$HERE/../build/packages

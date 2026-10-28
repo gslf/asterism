@@ -1,13 +1,16 @@
-# Starter configurations
+# Example settings
 
-Copy what you need into the engine root (default `~/asterism`), never use this
-directory as one. Relative paths resolve against the engine root.
+`asterism setup` writes the settings you need. These files are for when you
+want something different: copy one into `~/asterism/` under the name shown.
 
-| File | Copy to | Purpose |
+| File | Save as | What it is |
 |---|---|---|
-| `embedded.xcdn` | `config.xcdn` | Local GGUF models under `models/` |
-| `lmstudio.xcdn` | `config.xcdn` | OpenAI-compatible server; replace the `REPLACE_WITH_…` markers |
-| `astools.xcdn` | `astools.xcdn` | Tool registry and sandbox policy |
-| `asper.xcdn` | `asper.xcdn` | Memory settings; enable with `integration: { asper: { config: "asper.xcdn" } }` |
+| `base.xcdn`, `standard.xcdn`, `plus.xcdn` | `config.xcdn` | the three model sizes |
+| `chatgpt.xcdn` | `config.xcdn` | ChatGPT writes the answers, a local model does the rest |
+| `lmstudio.xcdn` | `config.xcdn` | use a model server (LM Studio, llama-server) instead of model files |
+| `embedded.xcdn` | `config.xcdn` | local model files, set up for programming work |
+| `serve.xcdn` | `serve.xcdn` | every Telegram setting |
+| `astools.xcdn` | `astools.xcdn` | which tools run and what they may touch |
+| `asper.xcdn` | `asper.xcdn` | memory settings |
 
-Copy the standard tools from `build/packages/` into `<engine-root>/tools/`.
+After changing a file, run `asterism stop` and `asterism start`.

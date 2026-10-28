@@ -21,7 +21,13 @@ typedef enum {
   ASMODEL_ERR_BACKEND,
   ASMODEL_ERR_CANCELLED,
   ASMODEL_ERR_UNSUPPORTED,
-  ASMODEL_ERR_TIMEOUT
+  ASMODEL_ERR_TIMEOUT,
+  /* Credentials are missing, expired or rejected: the user must sign in
+   * again (CHATGPT: `asterism login chatgpt`). Nothing was generated. */
+  ASMODEL_ERR_AUTH,
+  /* The provider refused the request because a plan/usage/rate limit was
+   * reached (HTTP 429 or a usage-limit failure event). Never retried. */
+  ASMODEL_ERR_QUOTA
 } asmodel_err;
 
 typedef enum {
@@ -37,7 +43,11 @@ typedef enum {
   ASMODEL_REMOTE_GENERIC,
   ASMODEL_REMOTE_LLAMA_SERVER,
   ASMODEL_REMOTE_LMSTUDIO,
-  ASMODEL_REMOTE_VLLM
+  ASMODEL_REMOTE_VLLM,
+  /* "Sign in with ChatGPT" plan usage: the public Responses API paid by the
+   * user's ChatGPT plan, authorized by an OAuth credential file (auth_file).
+   * See the ChatGPT section below. */
+  ASMODEL_REMOTE_CHATGPT
 } asmodel_remote_provider;
 
 typedef enum {
@@ -96,6 +106,8 @@ typedef struct {
   int usage_known; /* zero means unknown, not zero consumption */
   int json_output; /* selected JSON Schema; caller interprets the returned value */
   char error[512]; /* per-request provider diagnostic */
+  char error_code[64];    /* provider's machine-readable error code, when reported */
+  int64_t retry_after_ms; /* provider-reported back-off (Retry-After); 0 = none */
 } asmodel_generation_info;
 
 typedef enum {
@@ -142,6 +154,9 @@ typedef struct {
   size_t vram_mb;
   int warm;
   int kv_cache;
+  /* CHATGPT only: OAuth credential record written by the login API below.
+   * Relative paths are the caller's to resolve. */
+  const char *auth_file;
 } asmodel_spec;
 
 /* Canonical pipeline description, malloc-owned. UNSUPPORTED means that one
@@ -312,6 +327,101 @@ int asmodel_openai_provider_create(const asmodel_spec *spec,
 int asmodel_llama_provider_create(const asmodel_spec *spec,
                                   asmodel_provider *out_provider,
                                   char *error, size_t error_size);
+/* 1 when embedded llama.cpp can offload to a GPU (CUDA, Metal, Vulkan,
+ * ...), 0 when it runs on the CPU only, -1 when built without it. */
+int asmodel_llama_gpu(void);
+
+/* ── ChatGPT plan provider ("Sign in with ChatGPT") ────────────────────────
+ *
+ * remote_provider CHATGPT sends POST {base_url}/responses with the bearer
+ * access token stored in spec->auth_file, store:false and stream:true, as
+ * required by OpenAI's SIWC preview. System messages become `instructions`
+ * (system-role items are rejected by that route); developer messages stay
+ * developer items. temperature/top_p/max_output_tokens are not accepted by the
+ * route: max_tokens is enforced client-side on the streamed text (bytes/4,
+ * the same estimate as count_tokens) and an overrun returns ASMODEL_ERR_LIMIT.
+ * JSON Schema constraints use text.format (strict). A GBNF-only required
+ * constraint fails before dispatch. Native function tools are sent with
+ * strict:false; the host still validates arguments.
+ *
+ * Credentials: one JSON record per file, written atomically with owner-only
+ * permissions (0600 on POSIX) and never logged. Access tokens are refreshed
+ * shortly before expiry; the rotated refresh token is persisted before the
+ * new access token is used, under an in-process mutex plus an exclusive lock
+ * file (<auth_file>.lock), so concurrent requests and processes never spend
+ * a single-use refresh token twice. HTTP 401 triggers exactly one refresh and
+ * one resend (the request was not admitted); nothing else is retried.
+ * Missing/expired credentials return ASMODEL_ERR_AUTH; usage limits return
+ * ASMODEL_ERR_QUOTA with error_code/retry_after_ms when reported.
+ *
+ * Login: begin() binds a transient listener on 127.0.0.1 only (the project's
+ * only listening socket: loopback, one connection at a time, closed when the
+ * login finishes or the session is freed) and returns the authorization URL
+ * (PKCE S256, fresh state and nonce). Either wait() for the browser redirect,
+ * or complete() with the redirected URL pasted from another device (headless
+ * hosts; the browser there shows a failed page at 127.0.0.1 whose address is
+ * the URL to paste). A session is not thread-safe: serialize its calls. */
+#define ASMODEL_CHATGPT_ISSUER "https://auth.openai.com"
+#define ASMODEL_CHATGPT_RESOURCE "https://api.openai.com/v1"
+#define ASMODEL_CHATGPT_BASE_URL "https://api.openai.com/v1"
+#define ASMODEL_CHATGPT_USAGE_URL "https://chatgpt.com/settings/usage"
+
+typedef struct {
+  const char *auth_file;   /* required */
+  const char *host_file;   /* NULL: "<auth_file>.host"; stable ext_agent_host_id */
+  const char *agent_name;  /* NULL: "asterism"; agent_name_hint on registration */
+  const char *issuer;      /* NULL: ASMODEL_CHATGPT_ISSUER */
+  const char *resource;    /* NULL: ASMODEL_CHATGPT_RESOURCE */
+  int redirect_port;       /* 0: ephemeral port on 127.0.0.1 */
+  int new_registration;    /* 1: ignore a saved client_id (add/switch account) */
+  int64_t http_timeout_ms; /* token exchange; 0: 30000 */
+} asmodel_chatgpt_login_params;
+
+typedef struct asmodel_chatgpt_login asmodel_chatgpt_login;
+
+asmodel_err asmodel_chatgpt_login_begin(const asmodel_chatgpt_login_params *params,
+                                        asmodel_chatgpt_login **out_session,
+                                        char *error, size_t error_size);
+/* Borrowed, valid until login_free. The URL may carry an id_token_hint: show
+ * it to the user, never log it. */
+const char *asmodel_chatgpt_login_url(const asmodel_chatgpt_login *session);
+const char *asmodel_chatgpt_login_redirect_uri(const asmodel_chatgpt_login *session);
+/* Accept browser redirects for up to timeout_ms (0: one poll). TIMEOUT keeps
+ * the session usable; call again or complete(). Unrelated requests (favicon,
+ * wrong state) are answered and ignored. OK: tokens stored. UNSUPPORTED:
+ * signed in but plan usage not granted. AUTH: denied or rejected. */
+asmodel_err asmodel_chatgpt_login_wait(asmodel_chatgpt_login *session, int64_t timeout_ms,
+                                       char *error, size_t error_size);
+/* Headless fallback: the full redirected URL (or its query string) as pasted
+ * by the user. A bare code is rejected: its state cannot be verified. */
+asmodel_err asmodel_chatgpt_login_complete(asmodel_chatgpt_login *session, const char *pasted,
+                                           char *error, size_t error_size);
+void asmodel_chatgpt_login_free(asmodel_chatgpt_login *session);
+
+typedef struct {
+  int logged_in;          /* a refresh or access token is stored */
+  int plan_usage;         /* chatgpt.tokens.use.direct was granted */
+  int64_t expires_at;     /* access token expiry, unix seconds; 0 unknown */
+  int64_t saved_at;       /* last token response, unix seconds */
+  char email[256];        /* from the validated ID token, may be empty */
+  char subject[128];
+  char client_id[128];    /* issued dynamic client; kept across sign-out */
+  char plan[64];          /* ID-token plan claim when present, else empty */
+  char host_id[160];      /* ext_agent_host_id */
+} asmodel_chatgpt_status;
+
+/* Local read only, no network. NOT_FOUND when the file does not exist. */
+asmodel_err asmodel_chatgpt_status_read(const char *auth_file, asmodel_chatgpt_status *out);
+/* Revokes the refresh token (best effort, one attempt), then clears the
+ * tokens locally while keeping client_id, identity and host id for the next
+ * sign-in. *out_revoked tells whether the server confirmed revocation. */
+asmodel_err asmodel_chatgpt_logout(const char *auth_file, int *out_revoked,
+                                   char *error, size_t error_size);
+/* GET {base_url}/models with the stored credential (refreshing it if needed):
+ * malloc-owned JSON array of {"slug","display_name"} with visibility "list",
+ * server order preserved. base_url NULL: ASMODEL_CHATGPT_BASE_URL. */
+asmodel_err asmodel_chatgpt_models(const char *auth_file, const char *base_url,
+                                   char **out_json, char *error, size_t error_size);
 
 const char *asmodel_err_name(asmodel_err error);
 
