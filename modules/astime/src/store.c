@@ -174,7 +174,7 @@ static astime_err reload_locked(astime_store *s, bool first) {
       for (k = 0; !first && k < n_old && !seen; k++) seen = strcmp(known[k], s->v[i].r.name) == 0;
       if (!seen) load_state(s, &s->v[i]);
     }
-    qsort(s->v, s->n, sizeof *s->v, cmp_entry);
+    if (s->n > 1) qsort(s->v, s->n, sizeof *s->v, cmp_entry);
   }
   if (known) os_free_names(known, n_old);
   return e;
@@ -317,7 +317,7 @@ static astime_err install(astime_store *s, const astime_routine *r) {
   s->v[s->n].r = copy;
   load_state(s, &s->v[s->n]);
   s->n++;
-  qsort(s->v, s->n, sizeof *s->v, cmp_entry);
+  if (s->n > 1) qsort(s->v, s->n, sizeof *s->v, cmp_entry);
   return ASTIME_OK;
 }
 

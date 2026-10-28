@@ -676,15 +676,22 @@ static void send_approval(struct serve_daemon *d, serve_approval_job *job) {
   opts.parse_mode = "HTML";
   opts.keyboard = nb ? &kb : NULL;
   int64_t message_id = 0;
-  if (aslink_send_message(bot, chat, thread, b.data, &opts, &message_id, NULL) == ASLINK_OK) {
-    os_mutex_lock(&d->mu);
-    size_t slot = 0;
-    for (size_t i = 0; i < 32; i++)
-      if (!d->pending[i].used) { slot = i; break; }
-    d->pending[slot] = (serve_pending_approval){true, "", job->star, bot, chat, message_id, tainted};
-    snprintf(d->pending[slot].id, sizeof d->pending[slot].id, "%s", a->id);
-    os_mutex_unlock(&d->mu);
+  /* Recorded before the message goes out: a button pressed as soon as it
+   * shows must find its approval. The message id follows the send. */
+  os_mutex_lock(&d->mu);
+  size_t slot = 0;
+  for (size_t i = 0; i < 32; i++)
+    if (!d->pending[i].used) { slot = i; break; }
+  d->pending[slot] = (serve_pending_approval){true, "", job->star, bot, chat, 0, tainted};
+  snprintf(d->pending[slot].id, sizeof d->pending[slot].id, "%s", a->id);
+  os_mutex_unlock(&d->mu);
+  bool sent = aslink_send_message(bot, chat, thread, b.data, &opts, &message_id, NULL) == ASLINK_OK;
+  os_mutex_lock(&d->mu);
+  if (d->pending[slot].used && !strcmp(d->pending[slot].id, a->id)) {
+    if (sent) d->pending[slot].message_id = message_id;
+    else d->pending[slot].used = false;
   }
+  os_mutex_unlock(&d->mu);
   core_buf_free(&b);
   free(tool); free(cmd); free(cut); free(args);
   asngn_approval_free(a);

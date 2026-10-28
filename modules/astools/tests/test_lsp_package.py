@@ -66,6 +66,10 @@ def main():
         run = subprocess.run([args.cli, "invoke", "clangd.symbols",
                               '{path: "example.cpp", sha256: "%s"}' % digest, *host],
                              text=True, capture_output=True, timeout=30)
+        if "ASTOOLS_ERR_UNSUPPORTED" in run.stderr:
+            # an older clangd (Xcode 15) cannot negotiate UTF-8 positions
+            print(f"SKIP: {args.clangd} does not negotiate UTF-8 positions", file=sys.stderr)
+            raise SystemExit(77)
         assert run.returncode == 0, (run.stdout, run.stderr)
         observation = json.loads(run.stdout)
         assert observation["items"][0]["name"].startswith("identity"), observation

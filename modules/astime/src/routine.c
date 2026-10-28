@@ -640,7 +640,7 @@ astime_err astime_load_dir(const char *dir, astime_routine **out, size_t *out_n,
   *out_n = 0;
   e = astime_from_core(os_list_dir(dir, &names, &n));
   if (e != ASTIME_OK) return e;
-  qsort(names, n, sizeof *names, cmp_names);
+  if (n > 1) qsort(names, n, sizeof *names, cmp_names); /* names may be NULL */
   if (n) {
     list = (astime_routine *)calloc(n, sizeof *list);
     if (!list) {

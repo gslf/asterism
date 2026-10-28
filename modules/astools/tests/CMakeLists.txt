@@ -124,6 +124,7 @@ if(NOT WIN32 AND NOT ASTERISM_NO_THREADS)
     astools_test(lsp_clangd SOURCES fakes.c TIMEOUT 45)
     target_compile_definitions(astools_test_lsp_clangd PRIVATE
       "ASTOOLS_CLANGD_PATH=\"${ASTOOLS_CLANGD}\"")
+    set_tests_properties(astools.lsp_clangd PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 endif()
 
@@ -137,6 +138,7 @@ if(Python3_FOUND AND NOT WIN32 AND NOT ASTERISM_NO_THREADS)
     add_test(NAME astools.lsp_package
       COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_lsp_package.py
               --cli $<TARGET_FILE:astools_tool_cli> --clangd ${ASTOOLS_CLANGD})
-    set_tests_properties(astools.lsp_package PROPERTIES TIMEOUT 45 ENVIRONMENT "${ASTOOLS_TEST_ENV}")
+    set_tests_properties(astools.lsp_package PROPERTIES TIMEOUT 45 ENVIRONMENT "${ASTOOLS_TEST_ENV}"
+                         SKIP_RETURN_CODE 77)
   endif()
 endif()

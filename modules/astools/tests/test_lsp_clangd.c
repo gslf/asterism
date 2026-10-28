@@ -1,6 +1,18 @@
 /* Real clangd: overloaded definitions and Unicode positions through ⁂ astools. */
 #include "astools_test.h"
 #include "lsp_fixture.h"
+
+#include <stdlib.h>
+
+/* astools needs UTF-8 positions; an older clangd (Xcode 15) cannot
+ * negotiate them. That clangd is not one this suite can check: skip (77). */
+static void skip_if_unsupported(astools_err e, lsp_fixture *f) {
+  if (e != ASTOOLS_ERR_UNSUPPORTED) return;
+  fprintf(stderr, "SKIP: %s does not negotiate UTF-8 positions\n", ASTOOLS_CLANGD_PATH);
+  lsp_drop(f);
+  exit(77);
+}
+
 static void semantic_case(const char *level) {
   static const char source[] = "int pick(int x) { return x; }\n"
                                "double pick(double x) { return x; }\n"
@@ -10,6 +22,7 @@ static void semantic_case(const char *level) {
   ASSERT_TRUE(lsp_setup(&f, ASTOOLS_CLANGD_PATH, "--background-index=false", source, level));
   asmodel_json_value *out = NULL;
   astools_err e = lsp_call(&f, "symbols", NULL, 10000, &out);
+  skip_if_unsupported(e, &f);
   int symbols = (int)asmodel_json_array_len(asmodel_json_object_get(out, "items"));
   if (out) fprintf(stderr, "provider: %s\n", astools_lsp_string(out, "provider"));
   asmodel_json_free(out);
@@ -54,6 +67,7 @@ TEST(diagnostics_are_observations) {
                         "int use() { return missing_symbol; }\n", "basic"));
   asmodel_json_value *out = NULL;
   astools_err e = lsp_call(&f, "diagnostics", NULL, 10000, &out);
+  skip_if_unsupported(e, &f);
   int count = (int)asmodel_json_array_len(asmodel_json_object_get(out, "items"));
   int proof = asmodel_json_object_get(out, "verification") != NULL;
   asmodel_json_free(out);
