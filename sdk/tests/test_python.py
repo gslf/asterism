@@ -71,7 +71,11 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await waiting
             self.assertEqual(await client.call_tool("echo", {"alive": True}), {"alive": True})
-            await asyncio.sleep(0.3)
+            # the late replies come 0.2 s after each request; slow runners need longer
+            for _ in range(100):
+                if not client._rpc._pending:
+                    break
+                await asyncio.sleep(0.05)
             self.assertEqual(await client.call_tool("echo", {}), {})
             self.assertEqual(len(client._rpc._pending), 0)
 

@@ -142,7 +142,22 @@ asper_err os_blob_open(const char *path, FILE **out, uint64_t *size) {
       else {
         DWORD x = GetFullPathNameW(wide, a, expected, NULL), y = GetFinalPathNameByHandleW(handle, actual, b, FILE_NAME_NORMALIZED);
         if (!x || x >= a || !y || y >= b) e = ASPER_ERR_IO;
-        else if (_wcsicmp(dos_name(expected), dos_name(actual))) e = ASPER_ERR_INVALID;
+        else {
+          /* An 8.3 short name (C:\Users\RUNNER~1) is the same file, not an
+           * alias: compare its long form. Links still resolve elsewhere. */
+          DWORD l = GetLongPathNameW(expected, NULL, 0);
+          wchar_t *longer = l ? malloc((size_t)l * sizeof(wchar_t)) : NULL;
+          if (longer) {
+            DWORD z = GetLongPathNameW(expected, longer, l);
+            if (z && z < l) {
+              free(expected);
+              expected = longer;
+              longer = NULL;
+            }
+            free(longer);
+          }
+          if (_wcsicmp(dos_name(expected), dos_name(actual))) e = ASPER_ERR_INVALID;
+        }
       }
     }
   }

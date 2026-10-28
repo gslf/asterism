@@ -247,13 +247,14 @@ def main():
                 assert "qwen3.5-4b-q4_k_m.gguf" in f.read()
 
         # Without a background service, start and status say what to do.
+        # (Never start it: on Windows that would launch a real background agent.)
         status = subprocess.run([exe, "status", "--root", root], capture_output=True, text=True,
                                 encoding="utf-8", timeout=30)
-        start = subprocess.run([exe, "start", "--root", root], capture_output=True, text=True,
-                               encoding="utf-8", timeout=30)
+        assert status.returncode == 0 and "asterism" in status.stdout, status
         if "not set up to run in the background" in status.stdout:
-            assert status.returncode == 0 and start.returncode == 1, (status, start)
-            assert "asterism serve" in start.stdout, start.stdout
+            start = subprocess.run([exe, "start", "--root", root], capture_output=True,
+                                   text=True, encoding="utf-8", timeout=30)
+            assert start.returncode == 1 and "asterism serve" in start.stdout, start
 
         # An install from before the vault: serve.env moves into it.
         old = os.path.join(tmp, "old")

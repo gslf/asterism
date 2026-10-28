@@ -63,6 +63,9 @@ def isolated(command: list[str], root: Path) -> Result:
                      '--bind', str(build), '/workspace/build', '--chdir', '/workspace',
                      '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin',
                      '--setenv', 'HOME', '/tmp', '--setenv', 'LC_ALL', 'C', '--']
+            # Debian and Ubuntu reach cc through /etc/alternatives
+            if Path('/etc/alternatives').is_dir():
+                argv[-1:-1] = ['--ro-bind', '/etc/alternatives', '/etc/alternatives']
             # Resolve evaluator-owned executables; never inherit a startup module.
             command = ['/usr/bin/python3' if c == 'python3' else c for c in command]
             result = run(argv + command, root, pass_fds=(fd,))

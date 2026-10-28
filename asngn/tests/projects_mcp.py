@@ -8,6 +8,11 @@ import tempfile
 ASTERISM = sys.argv[1]
 
 
+def same(a, b):
+    """One path, whatever the separators and, on Windows, the case."""
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
 def mcp(root, calls):
     messages = [dict(jsonrpc="2.0", id=1, method="initialize", params={
         "protocolVersion": "2025-06-18", "capabilities": {},
@@ -45,16 +50,17 @@ with tempfile.TemporaryDirectory(prefix="asngn-projects-") as tmp:
         ("project_remove", {"name": "ext"}),
         ("project_list", {}),
     ])
-    assert r[0] == (False, {"name": "demo", "path": demo, "created_at": r[0][1]["created_at"]}), r[0]
+    assert r[0][0] is False and r[0][1]["name"] == "demo" and same(r[0][1]["path"], demo), r[0]
     assert os.path.isdir(demo)
-    assert r[1][1]["path"] == ext, r[1]
+    assert same(r[1][1]["path"], ext), r[1]
     assert r[2][0] and r[2][1]["error"] == "ASNGN_ERR_DENIED", r[2]
     assert r[3][0], r[3]
     assert [p["name"] for p in r[4][1]["projects"]] == ["demo", "ext"], r[4]
-    assert r[5] == (False, {"project": "demo", "workspace": demo, "mode": "coding",
-                            "security_profile": "coding-sandboxed"}), r[5]
-    assert r[6][1]["project"] == "demo" and r[6][1]["canonical_root"] == demo, r[6]
-    assert r[7][1]["project"] is None and r[7][1]["workspace"] != demo, r[7]
+    assert r[5][0] is False and same(r[5][1]["workspace"], demo), r[5]
+    assert (r[5][1]["project"], r[5][1]["mode"], r[5][1]["security_profile"]) == \
+        ("demo", "coding", "coding-sandboxed"), r[5]
+    assert r[6][1]["project"] == "demo" and same(r[6][1]["canonical_root"], demo), r[6]
+    assert r[7][1]["project"] is None and not same(r[7][1]["workspace"], demo), r[7]
     assert r[8][1]["project"] is None and "sessions" in r[8][1]["canonical_root"], r[8]
     assert r[9][1]["name"] == "ext" and os.path.isdir(ext), r[9]
     assert [p["name"] for p in r[10][1]["projects"]] == ["demo"], r[10]
@@ -65,7 +71,8 @@ with tempfile.TemporaryDirectory(prefix="asngn-projects-") as tmp:
                           capture_output=True, text=True, encoding="utf-8", timeout=60)
     with open(os.path.join(root, "sessions", "demo", "session.xcdn"), encoding="utf-8") as f:
         manifest = f.read()
-    assert 'project: "demo"' in manifest and demo in manifest, manifest
+    assert 'project: "demo"' in manifest, manifest
+    assert demo in manifest or demo.replace("\\", "/") in manifest, manifest
     assert not os.path.exists(os.path.join(demo, ".astools")), "tool scratch inside the project"
 
     # A fixed workspace has no per-session folders, so binding is refused.

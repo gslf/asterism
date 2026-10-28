@@ -287,7 +287,8 @@ static bool copy_tree(const char *from, const char *to) {
  * installed, build/packages in a build tree. */
 static bool install_tools(const options *o) {
   char exe[1024], dir[1200], *dst = at_root(o, "tools");
-  const char *const rel[] = {"../share/asterism/tools", "../packages"};
+  /* installed; a build tree; a multi-config build tree (bin/Release) */
+  const char *const rel[] = {"../share/asterism/tools", "../packages", "../../packages"};
   char **names = NULL;
   size_t n = 0, copied = 0;
   bool ok = true, found = false;
@@ -298,7 +299,7 @@ static bool install_tools(const options *o) {
   for (char *s = exe; *s; s++)
     if (*s == '\\') *s = '/';
   if (strrchr(exe, '/')) *strrchr(exe, '/') = '\0';
-  for (size_t r = 0; r < 2 && !found; r++) {
+  for (size_t r = 0; r < sizeof rel / sizeof rel[0] && !found; r++) {
     snprintf(dir, sizeof dir, "%s/%s", exe, rel[r]);
     found = os_is_dir(dir) == 1;
   }

@@ -63,7 +63,8 @@ test('local deadline and abort retain correlation for late replies', async () =>
     controller.abort();
     await rejected;
     assert.deepEqual(await client.callTool('echo', { alive: true }), { alive: true });
-    await delay(300);
+    // the late replies come 200 ms after each request; slow runners need longer
+    for (let i = 0; i < 100 && client.rpc.pending.size > 0; i++) await delay(50);
     assert.deepEqual(await client.callTool('echo', {}), {});
     assert.equal(client.rpc.pending.size, 0);
     const unusual = new AbortController();
