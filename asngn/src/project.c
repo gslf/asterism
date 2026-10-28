@@ -411,6 +411,7 @@ asngn_err asngn_session_project_sync(asngn_ctx *c, asngn_session *s) {
   asngn_workspace_info w;
   char *dir = NULL, *real = NULL;
   asngn_err e;
+  memset(&w, 0, sizeof w);
   if (c == NULL || s == NULL) return ASNGN_ERR_INVALID;
   if (!c->session_workspaces) return ASNGN_OK;
   if (s->project != NULL && asngn_project_lookup(c, s->project, &p) == ASNGN_OK) {

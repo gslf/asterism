@@ -45,8 +45,11 @@ static void background(const char *root, char *pid_path, size_t n) {
   }
   snprintf(pid, sizeof pid, "%lu\n", (unsigned long)GetCurrentProcessId());
 #else
-  (void)freopen(log, "a", stderr);
-  (void)freopen(log, "a", stdout);
+  {
+    /* a log that cannot be opened leaves the streams where they were */
+    FILE *err = freopen(log, "a", stderr), *out = err ? freopen(log, "a", stdout) : NULL;
+    (void)out;
+  }
   snprintf(pid, sizeof pid, "%ld\n", (long)getpid());
 #endif
   setvbuf(stderr, NULL, _IONBF, 0);

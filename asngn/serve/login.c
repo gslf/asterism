@@ -56,8 +56,10 @@ static void try_browser(const char *url) {
 #if !defined(_WIN32)
   pid_t pid = fork();
   if (pid == 0) {
-    freopen("/dev/null", "w", stdout);
-    freopen("/dev/null", "w", stderr);
+    /* the browser's chatter stays off the terminal */
+    FILE *out = freopen("/dev/null", "w", stdout), *err = freopen("/dev/null", "w", stderr);
+    (void)out;
+    (void)err;
     execlp(opener, opener, url, (char *)NULL);
     _exit(127);
   }

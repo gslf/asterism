@@ -543,6 +543,8 @@ static aslink_ctx *telegram_token(const options *o, outcome *out, char *api_base
   aslink_status st;
   aslink_err e = ASLINK_ERR_INVALID;
 
+  memset(&info, 0, sizeof info);
+  memset(&st, 0, sizeof st);
   serve_config_defaults(&cfg);
   if (!serve_config_load(&cfg, o->root, NULL, err, sizeof err)) {
     printf("  serve.xcdn: %s\n", err);

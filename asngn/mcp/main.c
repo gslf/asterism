@@ -832,12 +832,13 @@ static int tool_project_bind(server_state *st, const asmodel_json_value *args,
   const char *name = NULL, *session = NULL;
   asngn_session *s = NULL;
   asngn_workspace_info w;
-  asngn_usage_mode mode;
-  asngn_security_profile profile;
+  asngn_usage_mode mode = ASNGN_USAGE_CHAT;
+  asngn_security_profile profile = ASNGN_SECURITY_CHAT;
   asngn_err e;
   asmodel_json_value *o;
   int rc, ok;
 
+  memset(&w, 0, sizeof w);
   if (!pv)
     BADP("project_bind: \"project\" is required (string or null)");
   if (asmodel_json_typeof(pv) == ASMODEL_JSON_STRING) {

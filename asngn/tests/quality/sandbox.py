@@ -61,7 +61,7 @@ def isolated(command: list[str], root: Path) -> Result:
             argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
                      '--dir', '/etc', '--ro-bind', str(root), '/workspace',
                      '--bind', str(build), '/workspace/build', '--chdir', '/workspace',
-                     '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin',
+                     '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin',
                      '--setenv', 'HOME', '/tmp', '--setenv', 'LC_ALL', 'C', '--']
             # Resolve evaluator-owned executables; never inherit a startup module.
             command = ['/usr/bin/python3' if c == 'python3' else c for c in command]
