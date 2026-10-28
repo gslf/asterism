@@ -1,5 +1,5 @@
 /* Exercise real pipes: frame boundaries, output quotas, EOF and stalled peers. */
-#include "io.h"
+#include "acp_io.h"
 #include "asngn_test.h"
 #include <fcntl.h>
 #include <signal.h>

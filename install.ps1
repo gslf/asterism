@@ -59,7 +59,7 @@ function Set-UserPath([string]$Dir, [bool]$Add) {
 $setupRoot = @()
 if ($Root) { $setupRoot = @('--root', $Root) }
 
-# ── uninstall ────────────────────────────────────────────────────────────
+# -- uninstall ------------------------------------------------------------
 if ($Uninstall) {
   if (Test-Path $Exe) { & $Exe setup --remove-service @setupRoot }
   if (Test-Path $Prefix) { Remove-Item -Recurse -Force $Prefix }
@@ -75,7 +75,7 @@ if ($Uninstall) {
   return
 }
 
-# ── platform ─────────────────────────────────────────────────────────────
+# -- platform -------------------------------------------------------------
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'AMD64' { 'x86_64' }
   'ARM64' { 'arm64' }

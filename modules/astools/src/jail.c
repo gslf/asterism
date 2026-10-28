@@ -56,6 +56,7 @@ static __u64 landlock_rights(int abi) {
             LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK |
             LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
             LANDLOCK_ACCESS_FS_MAKE_SYM;
+  (void)abi; /* unused when the kernel headers predate every newer right */
 #ifdef LANDLOCK_ACCESS_FS_REFER
   if (abi >= 2) r |= LANDLOCK_ACCESS_FS_REFER;
 #endif

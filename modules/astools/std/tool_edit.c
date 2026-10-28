@@ -1109,12 +1109,12 @@ static void cmd_patch(astd_req *r) {
       /* Run the diff target through the pipeline ourselves —
        * resolve symlinks and confirm containment before any write. */
       {
-        const char *why = NULL;
-        char *canon = contain_target(abs, r->workspace, &why);
+        const char *reason = NULL;
+        char *canon = contain_target(abs, r->workspace, &reason);
         if (!canon) {
           fail_code = "edit/patch-failed";
           snprintf(emsg, sizeof emsg, "patch path '%s' rejected: %s", rel,
-                   why ? why : "outside workspace");
+                   reason ? reason : "outside workspace");
           free(abs);
           free(old_name);
           free(new_name);

@@ -1,6 +1,6 @@
 /* LSP-specific notifications use the common bounded JSON-RPC transport. */
 #include "lsp.h"
-#include "rpc.h"
+#include "astools_rpc.h"
 typedef struct { const char *uri; int version; } observation;
 static astools_err diagnostics(void *ud, const char *method, const asmodel_json_value *params, asmodel_json_value **out) {
   observation *want = ud;

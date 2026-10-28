@@ -20,6 +20,7 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -206,16 +207,12 @@ static bool service_for(const char *where, const char *root) {
   free(text);
   return ours;
 }
-#endif
 
 static const char *home(void) {
-#if defined(_WIN32)
-  const char *h = getenv("USERPROFILE");
-#else
   const char *h = getenv("HOME");
-#endif
   return h && *h ? h : NULL;
 }
+#endif
 
 /* ── Linux: systemd --user ───────────────────────────────────────────── */
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -518,7 +515,7 @@ bool setup_service_installed(void) {
 static bool run_entry_ours(const char *root) {
   HKEY key;
   wchar_t value[2048], *wroot = wide(root);
-  DWORD size = sizeof value - sizeof value[0];
+  DWORD size = (DWORD)(sizeof value - sizeof value[0]);
   bool ours = false;
   memset(value, 0, sizeof value);
   if (wroot && RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {

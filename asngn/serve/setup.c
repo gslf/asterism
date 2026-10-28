@@ -21,6 +21,7 @@
 
 #if defined(_WIN32)
 #include <io.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #define isatty _isatty
 #define popen _popen
@@ -995,7 +996,7 @@ int asngn_setup_main(int argc, char **argv) {
     /* the tier configurations name the embedded manifest's files */
     r.tier = choose_tier(&o, &hw, (const char *)setup_manifest, &config_exists, &current);
   }
-  if (config_exists && o.tier && (!current || strcmp(current, o.tier))) {
+  if (r.tier && config_exists && o.tier && (!current || strcmp(current, o.tier))) {
     char question[160];
     snprintf(question, sizeof question,
              "Switch to tier %s? (config.xcdn is kept as config.xcdn.bak)", o.tier);

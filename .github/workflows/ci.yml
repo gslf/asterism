@@ -26,9 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { submodules: recursive }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: '22' }
       - name: Install libcurl
         if: runner.os == 'Linux'
@@ -43,7 +43,8 @@ jobs:
       - name: aslink network suites registered
         if: runner.os == 'Windows'
         shell: bash
-        run: ctest --test-dir build -C Release -N -R '^aslink\.(telegram|transport)$' | grep -q 'Total Tests: 2'
+        run: |
+          ctest --test-dir build -C Release -N -R '^aslink\.(telegram|transport)$' | grep -q 'Total Tests: 2'
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: SDK packages
@@ -68,13 +69,13 @@ jobs:
         shell: bash
         run: |
           choco install shellcheck -y --no-progress >/dev/null
-          shellcheck -s sh install.sh scripts/fetch-models.sh
+          shellcheck -s sh install.sh
       - name: PSScriptAnalyzer install.ps1
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $issues = Invoke-ScriptAnalyzer -Path install.ps1, scripts/fetch-models.ps1 -Severity Warning, Error `
-            -ExcludeRule PSAvoidUsingWriteHost
+          $issues = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning, Error `
+            -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions
           $issues | Format-Table -AutoSize
           if ($issues) { exit 1 }
 

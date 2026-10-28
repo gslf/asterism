@@ -1,5 +1,5 @@
 /* Strict JSON-RPC correlation; server requests can never authorize host effects. */
-#include "rpc.h"
+#include "astools_rpc.h"
 
 const char *astools_rpc_string(const asmodel_json_value *object, const char *key) {
   const asmodel_json_value *v = asmodel_json_object_get(object, key);

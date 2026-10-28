@@ -1,7 +1,7 @@
 /* Opt-in stdio MCP client. Local manifests own authority and model-facing schemas. */
 #ifndef ASTOOLS_MCP_CLIENT_H
 #define ASTOOLS_MCP_CLIENT_H
-#include "rpc.h"
+#include "astools_rpc.h"
 #define ASTOOLS_MCP_VERSION "2026-07-28"
 astools_err astools_mcp_request(astools_ctx *c, astools_pproc *p, const char *method,
                                 asmodel_json_value *params, int64_t deadline, astools_task *cancel,

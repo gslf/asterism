@@ -261,8 +261,8 @@ TEST(display_strings_are_bounded) {
   size_t n = 0, i, len;
   /* 300 x "è" = 600 bytes: truncated on a code point boundary */
   for (i = 0; i < 300; i++) {
-    name[2 * i] = (char)0xc3;
-    name[2 * i + 1] = (char)0xa8;
+    name[2 * i] = '\xc3';
+    name[2 * i + 1] = '\xa8';
   }
   name[600] = 0;
   snprintf(json, sizeof json,

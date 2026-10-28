@@ -2,7 +2,7 @@
 #ifndef ASTOOLS_LSP_H
 #define ASTOOLS_LSP_H
 #include "execution.h"
-#include "rpc.h"
+#include "astools_rpc.h"
 #define LSP_FILE_BYTES (1024u * 1024u)
 #define LSP_RESULTS 128u
 #define LSP_SYMBOLS 1u

@@ -284,7 +284,7 @@ static astime_err get_string(const vctx *v, const char *path, const xcdn_value_t
 
 static astime_err set_string(const vctx *v, const char *path, const xcdn_value_t *val,
                              char **dst) {
-  const char *s;
+  const char *s = NULL;
   astime_err e = get_string(v, path, val, &s);
   if (e != ASTIME_OK) return e;
   free(*dst);
@@ -305,7 +305,7 @@ static astime_err get_duration(const vctx *v, const char *path, const xcdn_value
 
 static astime_err get_enum(const vctx *v, const char *path, const xcdn_value_t *val,
                            const char *const *names, int n, int *out) {
-  const char *s;
+  const char *s = NULL;
   int i;
   core_buf b;
   astime_err e = get_string(v, path, val, &s);
@@ -361,7 +361,7 @@ static astime_err parse_trigger(const vctx *v, const xcdn_value_t *obj, astime_r
       t->kind = ASTIME_TRIGGER_AT;
       kinds++;
     } else if (strcmp(k, "tz") == 0) {
-      int z;
+      int z = 0;
       if ((e = get_enum(v, path, val, TZS, 2, &z)) != ASTIME_OK) return e;
       t->tz = (astime_tz)z;
     } else {
@@ -475,7 +475,7 @@ static astime_err parse_object(const vctx *v, const xcdn_value_t *obj, astime_ro
     const xcdn_node_t *n = xcdn_object_node_at(obj, i);
     const xcdn_value_t *val = n ? n->value : NULL;
     astime_err e = ASTIME_OK;
-    int z;
+    int z = 0;
     if (!k || !val) continue;
     if (strcmp(k, "name") == 0) {
       e = set_string(v, k, val, &r->name);

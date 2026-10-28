@@ -5,12 +5,14 @@
 
 #include "aslink_test.h"
 
+/* Each test declares char *body_; the macro reuses it. */
 #define BODY_IS(call, want)                                                 \
   do {                                                                      \
-    char *body_ = NULL;                                                     \
+    body_ = NULL;                                                           \
     ASSERT_OK(call);                                                        \
     ASSERT_EQ_STR(body_, want);                                             \
     free(body_);                                                            \
+    body_ = NULL;                                                           \
   } while (0)
 
 TEST(get_updates_body) {
@@ -34,6 +36,7 @@ TEST(send_message_body) {
   };
   aslink_keyboard kb = {buttons, 3, 2};
   aslink_send_opts o;
+  char *body_ = NULL;
   BODY_IS(aslink_req_send_message(5, 0, "hello", NULL, &body_, NULL),
           "{\"chat_id\":5,\"text\":\"hello\"}");
   memset(&o, 0, sizeof o);

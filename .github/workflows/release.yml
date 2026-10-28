@@ -24,12 +24,12 @@ jobs:
           - { platform: linux-x86_64,   os: ubuntu-22.04,     flags: "" }
           - { platform: linux-arm64,    os: ubuntu-24.04-arm, flags: "" }
           - { platform: macos-arm64,    os: macos-14,         flags: "-DGGML_METAL=ON" }
-          - { platform: macos-x86_64,   os: macos-13,         flags: "" }
+          - { platform: macos-x86_64,   os: macos-15-intel,   flags: "" }
           - { platform: windows-x86_64, os: windows-latest,   flags: "-DASLINK_TRANSPORT=winhttp" }
     steps:
       - uses: actions/checkout@v7
         with: { submodules: recursive }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - name: Install libcurl
         if: runner.os == 'Linux'

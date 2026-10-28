@@ -752,10 +752,10 @@ asmodel_err asmodel_chatgpt_access(const char *auth_file, const char *stale, int
   {
     int64_t now = os_now_unix();
     int expired = r.expires_at && now >= r.expires_at - CG_EXPIRY_SKEW_S;
-    int near = r.expires_at && now >= r.expires_at - CG_REFRESH_MARGIN_S;
+    int soon = r.expires_at && now >= r.expires_at - CG_REFRESH_MARGIN_S;
     int forced = stale && r.access_token && !strcmp(stale, r.access_token);
-    if (near && !expired && r.earliest_refresh_at && now < r.earliest_refresh_at) near = 0;
-    if (!r.access_token || near || forced) {
+    if (soon && !expired && r.earliest_refresh_at && now < r.earliest_refresh_at) soon = 0;
+    if (!r.access_token || soon || forced) {
       if (!r.refresh_token) {
         if (r.access_token && !expired && !forced) goto use;
         say(error, size, "ChatGPT login expired: %s%s", CG_LOGIN_HINT, NULL);
@@ -825,7 +825,7 @@ asmodel_err asmodel_chatgpt_status_read(const char *auth_file, asmodel_chatgpt_s
   return ASMODEL_OK;
 }
 
-static int revoke(const cg_record *r, char *error, size_t size) {
+static int revoke_grant(const cg_record *r, char *error, size_t size) {
   static const char *const json_headers[] = {"Accept: application/json", NULL};
   static const char *const form_headers[] = {
     "Content-Type: application/x-www-form-urlencoded", "Accept: application/json", NULL};
@@ -887,7 +887,7 @@ asmodel_err asmodel_chatgpt_logout(const char *auth_file, int *out_revoked, char
   if (rc == ASMODEL_ERR_NOT_FOUND) { rc = ASMODEL_OK; goto unlock; }
   if (rc != ASMODEL_OK) goto unlock;
   if (r.refresh_token && r.client_id) {
-    int revoked = revoke(&r, error, size);
+    int revoked = revoke_grant(&r, error, size);
     if (out_revoked) *out_revoked = revoked;
   }
   /* Keep the account/client mapping and host id for the next sign-in. */

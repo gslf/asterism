@@ -156,19 +156,29 @@ def main():
             f.write(BLOBS["alpha.gguf"][:PART])
         common = ["--root", root, "--tier", "base", "--no-service", "--manifest", manifest,
                   "--api-base", tg_url, "--pair-timeout", "30"]
+        # A build without llama.cpp writes no model configuration and fetches
+        # no models; everything else must work the same.
+        probe = subprocess.run([exe, "setup", "--root", os.path.join(tmp, "probe"), "--yes",
+                                "--no-telegram", "--no-service", "--no-models"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+        llama = "no embedded llama.cpp" not in probe.stdout
+        if not llama:
+            with open(os.path.join(root, "config.xcdn"), "w", encoding="utf-8") as f:
+                f.write("#asngn_config {\n}\n")
 
         # First run: everything from scratch, token on stdin, pairing answered.
         rc, out = run_setup(exe, common + ["--token-stdin"], TOKEN + "\n", pair=True)
         assert rc == 0, out
-        for name, blob in BLOBS.items():
-            with open(os.path.join(root, "models", name), "rb") as f:
-                assert f.read() == blob, name
-        assert ("alpha.gguf", f"bytes={PART}-") in SEEN, SEEN
-        assert ("beta.gguf", None) in SEEN, SEEN
-        assert not [p for p in files_under(root) if p.endswith(".part")]
-        with open(os.path.join(root, "config.xcdn"), encoding="utf-8") as f:
-            config = f.read()
-        assert "qwen3.5-4b-q4_k_m.gguf" in config and '"astools.xcdn"' in config, config
+        if llama:
+            for name, blob in BLOBS.items():
+                with open(os.path.join(root, "models", name), "rb") as f:
+                    assert f.read() == blob, name
+            assert ("alpha.gguf", f"bytes={PART}-") in SEEN, SEEN
+            assert ("beta.gguf", None) in SEEN, SEEN
+            assert not [p for p in files_under(root) if p.endswith(".part")]
+            with open(os.path.join(root, "config.xcdn"), encoding="utf-8") as f:
+                config = f.read()
+            assert "qwen3.5-4b-q4_k_m.gguf" in config and '"astools.xcdn"' in config, config
         assert os.listdir(os.path.join(root, "tools")), "no tool packages copied"
         with open(os.path.join(root, "astools.xcdn"), encoding="utf-8") as f:
             grants = f.read()
@@ -191,7 +201,8 @@ def main():
         assert rc == 0, out
         assert len(SEEN) == before, SEEN[before:]
         assert "config.xcdn: kept" in out and "token: in the vault" in out, out
-        assert "paired with your Telegram account" in out and "alpha.gguf: checking" in out, out
+        assert "paired with your Telegram account" in out, out
+        assert not llama or "alpha.gguf: checking" in out, out
 
         # Claude Code installed later: its folder joins the tool permissions.
         if os.name != "nt":
@@ -210,12 +221,13 @@ def main():
             assert "may start programs" not in out, out
 
         # A corrupt model is fetched again.
-        with open(os.path.join(root, "models", "beta.gguf"), "r+b") as f:
-            f.write(b"x")
-        rc, out = run_setup(exe, common + ["--yes"])
-        assert rc == 0 and "beta.gguf: checking" in out and "wrong checksum" in out, out
-        with open(os.path.join(root, "models", "beta.gguf"), "rb") as f:
-            assert f.read() == BLOBS["beta.gguf"]
+        if llama:
+            with open(os.path.join(root, "models", "beta.gguf"), "r+b") as f:
+                f.write(b"x")
+            rc, out = run_setup(exe, common + ["--yes"])
+            assert rc == 0 and "beta.gguf: checking" in out and "wrong checksum" in out, out
+            with open(os.path.join(root, "models", "beta.gguf"), "rb") as f:
+                assert f.read() == BLOBS["beta.gguf"]
 
         # doctor reports the serve side.
         doctor = subprocess.run([exe, "doctor", "--root", root], capture_output=True, text=True,
@@ -225,13 +237,14 @@ def main():
         assert re.search(r"tools: [1-9]\d* packages", doctor.stdout), doctor.stdout
 
         # Switching tier rewrites config.xcdn and keeps the old one.
-        rc, out = run_setup(exe, ["--root", root, "--tier", "standard", "--yes", "--no-models",
-                                  "--no-telegram", "--no-service"])
-        assert rc == 0 and "config.xcdn: written for tier standard" in out, out
-        with open(os.path.join(root, "config.xcdn"), encoding="utf-8") as f:
-            assert "qwen3.5-9b-q4_k_m.gguf" in f.read()
-        with open(os.path.join(root, "config.xcdn.bak"), encoding="utf-8") as f:
-            assert "qwen3.5-4b-q4_k_m.gguf" in f.read()
+        if llama:
+            rc, out = run_setup(exe, ["--root", root, "--tier", "standard", "--yes",
+                                      "--no-models", "--no-telegram", "--no-service"])
+            assert rc == 0 and "config.xcdn: written for tier standard" in out, out
+            with open(os.path.join(root, "config.xcdn"), encoding="utf-8") as f:
+                assert "qwen3.5-9b-q4_k_m.gguf" in f.read()
+            with open(os.path.join(root, "config.xcdn.bak"), encoding="utf-8") as f:
+                assert "qwen3.5-4b-q4_k_m.gguf" in f.read()
 
         # Without a background service, start and status say what to do.
         status = subprocess.run([exe, "status", "--root", root], capture_output=True, text=True,
