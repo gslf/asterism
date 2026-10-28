@@ -78,6 +78,10 @@ endif()
 
 if(ASTERISM_WITH_LLAMA)
   enable_language(CXX)
+  # llama.cpp needs C++17; AppleClang would otherwise compile C++98.
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
   # One static copy, linked into every executable: no runtime library paths.
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)

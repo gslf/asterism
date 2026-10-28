@@ -6,6 +6,7 @@
  * coordinator's projects_mu. A project folder is never created inside
  * sessions/ and never deleted: removing a project only unregisters it. */
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,19 +18,31 @@ struct asngn_project_hold {
   char slug[65];
 };
 
-#if defined(_WIN32)
-#define path_ncmp _strnicmp
-#else
-#define path_ncmp strncmp
-#endif
-
 static bool is_sep(char ch) { return ch == '/' || ch == '\\'; }
+
+/* The first n bytes match, any separator matching any other: canonical
+ * paths come with '/' and the environment's with '\\' on Windows, where
+ * letters also match in either case. */
+static bool path_prefix(const char *a, const char *b, size_t n) {
+  size_t i;
+  for (i = 0; i < n; i++) {
+    char x = a[i], y = b[i];
+    if (x == '\0' || y == '\0') return x == y;
+    if (is_sep(x) && is_sep(y)) continue;
+#if defined(_WIN32)
+    x = (char)tolower((unsigned char)x);
+    y = (char)tolower((unsigned char)y);
+#endif
+    if (x != y) return false;
+  }
+  return true;
+}
 
 /* child is parent or lies below it, component-wise. */
 static bool path_within(const char *child, const char *parent) {
   size_t n = strlen(parent);
   while (n > 1 && is_sep(parent[n - 1])) n--;
-  if (n == 0 || path_ncmp(child, parent, n) != 0) return false;
+  if (n == 0 || !path_prefix(child, parent, n)) return false;
   return child[n] == '\0' || is_sep(child[n]) || is_sep(parent[n - 1]);
 }
 

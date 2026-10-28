@@ -83,6 +83,10 @@ TEST(steps_recall_alternative) {
   free(g);
 }
 
+#ifdef ASNGN_TEST_LLAMA
+int asngn_test_gbnf_accepts(const char *grammar, const char *text);
+#endif
+
 TEST(steps_blob_handles) {
   char *g = NULL;
   ASSERT_OK(asngn_grammar_steps(NULL, false, false, true, false, 3, NULL, &g));
@@ -90,7 +94,6 @@ TEST(steps_blob_handles) {
   ASSERT_TRUE(strstr(g, "blob      ::= \"1\" | \"2\" | \"3\"") != NULL);
   ASSERT_TRUE(strstr(g, "offset    ::= \"0\" | [1-9] [0-9]{0,9}") != NULL);
 #ifdef ASNGN_TEST_LLAMA
-  extern int asngn_test_gbnf_accepts(const char *, const char *);
   ASSERT_EQ_INT(
       asngn_test_gbnf_accepts(
           g, "{action: \"open\", why: \"inspect\", input: {\"blob\": 3, \"offset\": 80000}}\n"),

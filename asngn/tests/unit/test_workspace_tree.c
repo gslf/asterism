@@ -44,6 +44,8 @@ static asngn_err collect(const char *relative, FILE *file, size_t bytes, void *u
   f->visits++;
   f->read_bytes += len;
   if (f->cancel_after_one) f->cancel = true;
+  /* past the file clock's tick, which is coarse on some kernels */
+  if (f->mutation == 1 || f->mutation == 2) os_sleep_ms(50);
   if (f->mutation == 1) e = put(f->root, relative, "changed length during read");
   if (f->mutation == 2) e = put(f->root, "added-during-scan", "new file");
 #ifndef _WIN32

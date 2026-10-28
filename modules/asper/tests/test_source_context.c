@@ -154,6 +154,7 @@ TEST(source_views_capture_pins_and_reject_frames_damaged_after_open) {
     ASSERT_OK(asper_source_view_read(&view, 1, &item)); free(item.text);
   }
   snprintf(path, sizeof path, "%s/scopes/context/events.log", root);
+  os_sleep_ms(50); /* the damage lands after the file clock's coarse tick */
   if (!damage) ASSERT_OK(os_truncate(path, 10));
   else if (damage == 1 || damage == 3) {
     char *data = NULL; size_t n;

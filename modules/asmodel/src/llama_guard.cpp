@@ -10,6 +10,10 @@
 #include <cstdlib>
 #include <exception>
 
+#if !defined(_WIN32)
+#include <unistd.h> /* _exit */
+#endif
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
