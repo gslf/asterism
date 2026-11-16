@@ -662,6 +662,9 @@ struct asper_ctx {
   size_t access_n, access_cap;
   bool cycle_busy;              /* a curator generation is running */
   int  recall_waiting;          /* recalls waiting for the cycle slot */
+  int  hold;                    /* asper_hold depth: the host's model is busy */
+  core_time hold_released_at;   /* when hold last fell to 0; 0 = never held */
+  volatile int cycle_cancel;    /* stops the worker's running generation */
 
   /* curator state */
   asper_pending *pending;       /* identity quorum set */

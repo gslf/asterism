@@ -685,13 +685,31 @@ static void send_approval(struct serve_daemon *d, serve_approval_job *job) {
   d->pending[slot] = (serve_pending_approval){true, "", job->star, bot, chat, 0, tainted};
   snprintf(d->pending[slot].id, sizeof d->pending[slot].id, "%s", a->id);
   os_mutex_unlock(&d->mu);
-  bool sent = aslink_send_message(bot, chat, thread, b.data, &opts, &message_id, NULL) == ASLINK_OK;
+  /* The turn waits for this answer, so a lost message would stall it for
+   * good: retry a short outage, and when the request cannot be shown at all,
+   * deny it rather than leave the turn without buttons. */
+  bool sent = false;
+  aslink_status st;
+  for (int attempt = 0; attempt < 4 && !sent && !d->stop; attempt++) {
+    if (attempt) {
+      int wait = st.retry_after_s > 0 && st.retry_after_s <= 30 ? st.retry_after_s * 10 : 5 << attempt;
+      for (int i = 0; i < wait && !d->stop; i++) os_sleep_ms(100);
+    }
+    memset(&st, 0, sizeof st);
+    sent = aslink_send_message(bot, chat, thread, b.data, &opts, &message_id, &st) == ASLINK_OK;
+  }
   os_mutex_lock(&d->mu);
   if (d->pending[slot].used && !strcmp(d->pending[slot].id, a->id)) {
     if (sent) d->pending[slot].message_id = message_id;
     else d->pending[slot].used = false;
   }
   os_mutex_unlock(&d->mu);
+  if (!sent && !d->stop) {
+    fprintf(stderr, "asterism serve: approval request not delivered (%s); denied\n",
+            st.message[0] ? st.message : "send failed");
+    (void)asngn_confirm(job->star->ctx, a->id, false, false);
+    (void)aslink_send_message(bot, chat, thread, serve_s(S_APPROVAL_UNSENT), NULL, NULL, NULL);
+  }
   core_buf_free(&b);
   free(tool); free(cmd); free(cut); free(args);
   asngn_approval_free(a);

@@ -34,6 +34,7 @@ static void cfg_pool_entry(asngn_pool_entry *e, const char *id,
   e->gpu_layers = gpu_layers;
   e->warm = true;
   e->kv_cache = true;
+  e->tier = -1;
 }
 
 void asngn_config_defaults(asngn_config *cfg) {
@@ -184,6 +185,7 @@ void asngn_config_free(asngn_config *cfg) {
   free(cfg->asper_config);
   free(cfg->astools_root);
   free(cfg->astools_workspace);
+  free(cfg->astools_core);
   free(cfg->astools_config);
   memset(cfg, 0, sizeof *cfg);
 }
@@ -195,7 +197,8 @@ typedef struct { const char *name; int value; } enum_map;
 static const enum_map CLASSIFIER_MAP[] = {
   { "heuristic", ASNGN_CLASSIFIER_HEURISTIC },
   { "model", ASNGN_CLASSIFIER_MODEL },
-  { "hybrid", ASNGN_CLASSIFIER_HYBRID }, { NULL, 0 } };
+  { "hybrid", ASNGN_CLASSIFIER_HYBRID },
+  { "off", ASNGN_CLASSIFIER_OFF }, { NULL, 0 } };
 static const enum_map PROFILE_MAP[] = {
   { "general", ASNGN_PROFILE_GENERAL },
   { "coding", ASNGN_PROFILE_CODING }, { NULL, 0 } };
@@ -497,7 +500,8 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
     const char *id, *path, *backend_s, *base_url, *remote_model, *provider_s;
     const char *api_key_env, *auth_file;
     int64_t ctx = 0, threads = 4, dim = 0, gpu_layers = -1;
-    int64_t ram_mb = 0, vram_mb = 0;
+    int64_t ram_mb = 0, vram_mb = 0, tier = -1;
+    double bytes_per_token = 0.0;
     bool embedding = false, warm = true, kv_cache = true;
     asmodel_backend backend = ASMODEL_BACKEND_EMBEDDED;
     asmodel_remote_provider remote_provider = ASMODEL_REMOTE_AUTO;
@@ -572,6 +576,12 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
     if (f != NULL && (!asngn_xint(f, &ram_mb) || ram_mb < 0)) goto bad_entry;
     f = asngn_xfield(eo, "vram_mb");
     if (f != NULL && (!asngn_xint(f, &vram_mb) || vram_mb < 0)) goto bad_entry;
+    f = asngn_xfield(eo, "tier");
+    if (f != NULL && (!asngn_xint(f, &tier) || tier < 0 || tier > 1000)) goto bad_entry;
+    f = asngn_xfield(eo, "bytes_per_token");
+    if (f != NULL && (!asngn_xnum(f, &bytes_per_token) || bytes_per_token < 1.0 ||
+                      bytes_per_token > 8.0))
+      goto bad_entry;
     f = asngn_xfield(eo, "warm");
     if (f != NULL && !asngn_xbool(f, &warm)) goto bad_entry;
     f = asngn_xfield(eo, "kv_cache");
@@ -594,6 +604,8 @@ static asngn_err cfg_apply_pool(asngn_ctx *c, asngn_config *cfg,
       if (f && (!text || strlen(text) >= sizes[k])) goto bad_entry;
       if (text) strcpy(values[k],text);
     }
+    fresh[i].tier = (int)tier;
+    fresh[i].bytes_per_token = bytes_per_token;
     fresh[i].backend = backend;
     fresh[i].base_url = base_url ? cfg_dup(base_url) : NULL;
     fresh[i].remote_model = remote_model ? cfg_dup(remote_model) : NULL;
@@ -783,6 +795,9 @@ static asngn_err cfg_apply_integration(asngn_ctx *c, asngn_config *cfg,
     } else if (is_astools && strcmp(key, "tool_schema_bytes") == 0) {
       k.kind = K_INT;
       k.off = OFF(tool_schema_bytes);
+    } else if (is_astools && strcmp(key, "core") == 0) {
+      k.kind = K_NSTR;
+      k.off = OFF(astools_core);
     } else {
       asngn_log(c, ASNGN_LOG_WARN, "config",
                 "unknown key integration.%s.%s", sub, key);

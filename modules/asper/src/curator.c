@@ -726,7 +726,11 @@ asper_err asper_curation_cycle(asper_ctx *c, bool force)
   asper_output_contract contract = {ASPER_GRAMMAR_CURATION, n_handles, c->cfg.content_max_chars};
   asmodel_generate_params params = {.max_tokens=CURATOR_CYCLE_MAX_TOKENS};
   asmodel_text_input input; asmodel_input_pair(&input,instr,prompt);
-  rc = c->curator.generate(c->curator.ud,&input.input,gbnf,&contract,&params,NULL,&reply);
+  rc = c->curator.generate(c->curator.ud,&input.input,gbnf,&contract,&params,&c->cycle_cancel,&reply);
+  if (rc == ASPER_ERR_CANCELLED) {
+    asper_log(c, ASPER_LOG_INFO, "curator", "paused: %zu turn(s) wait for the model to be idle", n_turns);
+    goto out;
+  }
   if (rc != ASPER_OK) {
     asper_log(c, ASPER_LOG_ERROR, "curator",
               "generation failed (%s: %s): retaining %zu turn(s) for retry",
@@ -986,7 +990,8 @@ asper_err asper_maintenance_review(asper_ctx *c, bool force)
   asper_output_contract contract = {ASPER_GRAMMAR_REVIEW, n_cands, c->cfg.content_max_chars};
   asmodel_generate_params params = {.max_tokens=CURATOR_REVIEW_MAX_TOKENS};
   asmodel_text_input input; asmodel_input_pair(&input,ASPER_REVIEW_INSTRUCTION,prompt);
-  rc = c->curator.generate(c->curator.ud,&input.input,gbnf,&contract,&params,NULL,&reply);
+  rc = c->curator.generate(c->curator.ud,&input.input,gbnf,&contract,&params,&c->cycle_cancel,&reply);
+  if (rc == ASPER_ERR_CANCELLED) goto out;
   if (rc != ASPER_OK) {
     asper_log(c, ASPER_LOG_ERROR, "curator", "review generation failed (%s)",
               asper_err_name(rc));

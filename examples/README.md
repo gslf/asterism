@@ -9,6 +9,7 @@ want something different: copy one into `~/asterism/` under the name shown.
 | `chatgpt.xcdn` | `config.xcdn` | ChatGPT writes the answers, a local model does the rest |
 | `lmstudio.xcdn` | `config.xcdn` | use a model server (LM Studio, llama-server) instead of model files |
 | `embedded.xcdn` | `config.xcdn` | local model files, set up for programming work |
+| `inferenz.xcdn` | `config.xcdn` | inferenZ answers and uses the tools; no classifier in front of it |
 | `serve.xcdn` | `serve.xcdn` | every Telegram setting |
 | `astools.xcdn` | `astools.xcdn` | which tools run and what they may touch |
 | `asper.xcdn` | `asper.xcdn` | memory settings |

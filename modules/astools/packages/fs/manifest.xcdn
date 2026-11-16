@@ -50,7 +50,11 @@
         Returns up to max_bytes bytes of the file starting at offset. Ask
         for encoding "base64" when the file is (or may be) binary. When
         truncated is true, repeat the call with a higher offset to page
-        through the rest of the file.
+        through the rest of the file. With anchors true every line comes
+        back as LINE:TAG|text (for example 42:ab3|int x = 1;); pass those
+        LINE:TAG anchors to edit.lines to change the lines without retyping
+        them. Anchored reads return whole lines and give next_offset to
+        continue from when truncated.
       """,
       annotations: { read_only: true, idempotent: true },
       params: [
@@ -78,12 +82,20 @@
           default: "utf8",
           description: "Encoding of the returned content.",
         },
+        #param {
+          name: "anchors",
+          type: #type { kind: "boolean" },
+          default: false,
+          description: "Prefix each line with LINE:TAG| for edit.lines (utf8 text only).",
+        },
       ],
       returns: {
         type: #type { kind: "object", fields: [
           #param { name: "content", type: #type { kind: "string" },
                    required: true,
                    description: "File content in the requested encoding." },
+          #param { name: "next_offset", type: #type { kind: "integer" },
+                   description: "With anchors and truncated: offset of the next line." },
           #param { name: "size", type: #type { kind: "integer" },
                    required: true,
                    description: "Total file size in bytes." },
@@ -97,6 +109,7 @@
         { code: "fs/not-found", description: "The file does not exist." },
         { code: "fs/is-dir", description: "The path is a directory." },
         { code: "fs/io", description: "The operating system refused the read." },
+        { code: "fs/not-text", description: "anchors true, but the file is binary or over 16 MiB." },
       ],
       examples: [
         #example {

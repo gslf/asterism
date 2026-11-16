@@ -23,6 +23,7 @@ static const char *const STRINGS[S__COUNT] = {
   [S_ALLOWED] = "✅ Allowed.",
   [S_DENIED] = "❌ Denied.",
   [S_EXPIRED] = "This button is no longer valid.",
+  [S_APPROVAL_UNSENT] = "❌ An approval request could not be shown here, so the action was not done.",
   [S_HELP] =
       "Write or speak naturally. Commands:\n"
       "/new [title] — new thread (one task per thread)\n"

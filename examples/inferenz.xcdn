@@ -1,0 +1,54 @@
+// Copy to ~/asterism/config.xcdn to use inferenZ as the model that answers
+// and uses the tools. Start it first and keep it running:
+//   cd ~/DevEnv/inferenZ && ./inz serve --ctx 65536
+//
+// One strong model decides everything: there is no classifier in front of
+// it. It always gets the same short list of tools and the same prompt, so
+// the server reads each conversation once and then only what is new.
+
+#asngn_config {
+  models: {
+    max_resident: 3,
+    pool: [
+      // tier: higher is stronger. Without it the order of this list is used.
+      { id: "nano", path: "models/qwen3.5-0.8b-q8_0.gguf", ctx: 8192,
+        threads: 4, gpu_layers: 0, tier: 0 },
+      { id: "std", path: "models/qwen3.5-4b-q4_k_m.gguf", ctx: 32768,
+        threads: 8, gpu_layers: 0, tier: 1 },
+      // bytes_per_token: asterism cannot count this model's tokens, so it
+      // counts bytes. 3 is safe for text and code; without it, 1 is used
+      // and the context looks three times fuller than it is.
+      { id: "inz", backend: "openai", provider: "generic",
+        base_url: "http://127.0.0.1:8080/v1", model: "qwen3.8-flash-next",
+        ctx: 65536, tier: 2, bytes_per_token: 3.0 },
+      { id: "embed", path: "models/embeddinggemma-300m-q8_0.gguf", ctx: 2048,
+        threads: 4, gpu_layers: 0, embedding: true, dim: 768,
+        query_prefix: "task: search result | query: ",
+        document_prefix: "title: none | text: " },
+    ],
+    roles: {
+      router: "nano", planner: "inz", generator: "inz", compressor: "std",
+      adapter: "std", judge: "std", embedder: "embed",
+    },
+    sampling: {
+      decide: { temp: 1.0, top_p: 0.95, max_tokens: 8192 },
+      answer: { temp: 1.0, top_p: 0.95 },
+    },
+  },
+
+  routing: {
+    // The model calls tools natively and decides by itself when to.
+    native_actions: true,
+    classifier: "off",
+  },
+
+  // A long task needs more than the default 16 steps and 8 tool calls.
+  safety: { max_steps: 48, max_tool_calls: 40 },
+
+  integration: {
+    astools: { enable: true, root: "tools", config: "astools.xcdn", workspace: "session",
+               tool_limit: 59, tool_schema_bytes: 131072,
+               // Always offered. The others are one asterism_discover away.
+               core: "fs.read fs.list fs.write edit.lines grep.search proc.run git.status git.diff" },
+  },
+}

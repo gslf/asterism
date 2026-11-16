@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
   asngn_native_entry entries[ASNGN_NATIVE_HISTORY];
   size_t count, bytes;
+  const struct asngn_native_thread *thread; /* earlier turns: their call ids are taken */
 } asngn_native_history;
 
 asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool call_now,
@@ -30,8 +31,29 @@ void asngn_native_history_free(asngn_native_history *h);
 /* Copies a redacted, bounded observation of this action's working items. */
 asngn_err asngn_native_record(asngn_turn_state *t, asngn_native_history *h,
                               const asmodel_tool_call *call, size_t work_before);
-asngn_err asngn_native_input(asngn_ctx *c, asngn_turn_state *t, const asngn_prompt *seed,
-                             const asngn_native_history *h, core_buf *status,
-                             asmodel_message messages[131], asmodel_block blocks[131],
-                             asmodel_input *out);
+/* One message of the stored conversation. role: s system text, m memory of
+ * older turns, u user, c tool call, r tool result, a assistant text. */
+typedef struct {
+  char role;
+  char *id, *name, *text;
+} asngn_thread_msg;
+typedef struct asngn_native_thread {
+  asngn_thread_msg *v;
+  size_t n, cap, bytes;
+} asngn_native_thread;
+void asngn_native_thread_free(asngn_native_thread *th);
+asngn_err asngn_native_thread_load(const asngn_session *s, asngn_native_thread *th);
+asngn_err asngn_native_thread_add(asngn_native_thread *th, char role, const char *id,
+                                  const char *name, const char *text);
+bool asngn_native_thread_full(asngn_ctx *c, int slot, const asngn_native_thread *th);
+/* Messages: the thread, this turn's calls and results, then the state. The
+ * arrays are allocated here; free(*messages) and free(*blocks). */
+asngn_err asngn_native_input(asngn_ctx *c, asngn_turn_state *t, const asngn_native_thread *th,
+                             const char *rules, const asngn_native_history *h, core_buf *state,
+                             int ceiling, const char *closing, asmodel_message **messages,
+                             asmodel_block **blocks, asmodel_input *out);
+/* The response pass over the same conversation, when the action phase did
+ * not leave a usable final message. */
+asngn_err asngn_native_answer(asngn_ctx *c, asngn_turn_state *t, const char *trailer, int cap,
+                              asngn_token_fn cb, void *cb_ud, char **out, int *out_tokens);
 #endif

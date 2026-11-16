@@ -113,6 +113,10 @@ if(TARGET asterism)
   # The daemon end to end: fake Telegram and fake llama-server on loopback.
   if(NOT WIN32 AND "CURL::libcurl" IN_LIST ASNGN_MODEL_LINKS)
     asngn_py_test(serve_e2e serve_e2e.py 180 $<TARGET_FILE:asterism> ${CMAKE_BINARY_DIR}/packages)
+    asngn_py_test(serve_native_e2e serve_native_e2e.py 180 $<TARGET_FILE:asterism> ${CMAKE_BINARY_DIR}/packages)
+    # A new turn must extend the previous request, not rewrite it.
+    asngn_py_test(native_prefix prefix_probe.py 180 $<TARGET_FILE:asterism> ${CMAKE_BINARY_DIR}/packages
+                  --classifier off --min-turn-reuse 0.9)
   endif()
 endif()
 

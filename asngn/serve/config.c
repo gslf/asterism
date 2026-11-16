@@ -91,8 +91,8 @@ void serve_config_defaults(serve_config *cfg) {
   cfg->max_download_bytes = 20u * 1024u * 1024u;
   cfg->stars_n = 1;
   snprintf(cfg->stars[0].name, sizeof cfg->stars[0].name, "default");
-  cfg->stars[0].mode = ASNGN_USAGE_CHAT;
-  cfg->stars[0].profile = ASNGN_SECURITY_CHAT;
+  cfg->stars[0].mode = ASNGN_USAGE_CODING;
+  cfg->stars[0].profile = ASNGN_SECURITY_CODING_SANDBOXED;
 }
 
 void serve_config_free(serve_config *cfg) {
@@ -116,8 +116,9 @@ static bool load_star(serve_star_config *star, const xcdn_value_t *obj,
       !str(obj, "identity", star->identity, sizeof star->identity, err, n))
     return false;
   if (!core_slug_valid(star->name)) return fail(err, n, "invalid star name", star->name);
-  star->mode = ASNGN_USAGE_CHAT;
-  star->profile = ASNGN_SECURITY_CHAT;
+  /* Like the terminal: tools, and a Yes/No question before each change. */
+  star->mode = ASNGN_USAGE_CODING;
+  star->profile = ASNGN_SECURITY_CODING_SANDBOXED;
   if (*mode && !mode_of(mode, &star->mode)) return fail(err, n, "unknown mode", mode);
   if (*profile && !profile_of(profile, &star->profile))
     return fail(err, n, "unknown profile", profile);

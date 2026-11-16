@@ -45,7 +45,8 @@ To watch it work, run `asterism serve` in a terminal instead.
 ## Use it
 
 On Telegram, write to your bot: text, voice notes, photos, files. Before it
-changes a file or uses the internet, it asks you with Yes/No buttons.
+changes a file or uses the internet, it asks you with Yes/No buttons. The
+task waits for your answer; `/stop` cancels it.
 
 | Command | What it does |
 |---|---|
@@ -56,8 +57,9 @@ changes a file or uses the internet, it asks you with Yes/No buttons.
 | `/routine` | repeat a task, e.g. `/routine add every day at 8 \| summarize my mail` |
 | `/help` | all the commands |
 
-In the terminal, `asterism` opens a chat and `asterism --once "your question"`
-answers one question.
+In the terminal, `asterism` opens a chat that asks the same questions, and
+`asterism --once "your question"` answers one question. `--once` cannot ask,
+so it changes nothing.
 
 ## Projects
 

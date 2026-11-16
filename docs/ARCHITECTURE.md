@@ -60,3 +60,37 @@ written.
 - **Tests need no models and no internet.** Models are faked and test servers
   run on the same computer. `ctest --test-dir build` runs everything in
   seconds.
+
+## How a request to the model is built
+
+A model server keeps what it read last and continues from there, as long as
+the new request starts with the old one. So, when the model calls tools
+natively (`routing.native_actions`), a session only ever adds to what it
+sends:
+
+1. the instructions and the tools, the same for every message;
+2. the conversation so far, as it was sent: each message, each tool call and
+   its result, each answer (`sessions/<name>/native.thread`);
+3. last, a few lines that do change: what is done, what is left.
+
+When the conversation gets too long, its oldest part is dropped in one step
+and replaced by what the memory holds about it.
+
+`asngn/tests/prefix_probe.py` measures how much of each request repeats the
+one before; the `asngn.native_prefix` test fails if a new message rewrites
+the conversation instead of extending it.
+
+## Who decides what
+
+With `routing.classifier: "off"` nothing sorts the request before the model
+sees it: the model always has its tools and decides by itself whether to
+answer or to act. This is the right setting when one strong model does the
+work ([examples/inferenz.xcdn](../examples/inferenz.xcdn)).
+
+The other classifier settings are for small models, where a lighter one
+answers the easy requests. A model in the pool may declare `tier`; "one tier
+up" then follows that number instead of the order of the list.
+
+`scripts/agent_bench.py` runs a fixed set of tasks against a running model
+server and reports which succeeded, how long they took and how many prompt
+tokens were read again.

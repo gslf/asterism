@@ -10,9 +10,11 @@
   title: "Surgical text edits",
   summary: "Replace, insert and patch text in workspace files, atomically.",
   description: """
-    Targeted edits of UTF-8 text files: edit.replace swaps an exact (or
-    regex) match, edit.insert adds lines at a position, edit.patch applies
-    a unified diff. Prefer these over rewriting whole files with fs.write —
+    Targeted edits of UTF-8 text files: edit.lines changes lines named by
+    anchor (the most reliable way: read with anchors, then edit by anchor),
+    edit.replace swaps an exact (or regex) match, edit.insert adds lines at
+    a position, edit.patch applies a unified diff. Prefer these over
+    rewriting whole files with fs.write —
     they fail loudly instead of clobbering. Every edit is written to a
     temporary file and atomically renamed into place, and the dominant
     line-ending style (LF or CRLF) of the file is preserved. Binary files
@@ -170,6 +172,95 @@
           call: { path: "notes/todo.txt", line: 0,
                   content: "- review manifests" },
           result: { size: 42 },
+        },
+      ],
+    },
+
+    #command {
+      name: "lines",
+      summary: "Replace, insert or delete lines named by anchor (LINE:TAG).",
+      description: """
+        Use this to change existing lines: first read the file with
+        fs.read anchors true (or code.read-range / grep.search with anchors
+        true), then name the lines by their LINE:TAG anchor, such as 42:ab3.
+        You never retype the old text. Each op has start, an optional end
+        (the range is inclusive) and an action: replace or delete the
+        range, or insert_before / insert_after the start line. text is the
+        new line(s), without anchors; one trailing newline is ignored, so ""
+        is one empty line. All ops use the anchors from the same read and
+        are applied together. If any anchor no longer matches the file,
+        nothing is changed and the error shows the current line: read again
+        and retry. After a successful call the line numbers have moved, so
+        read again before the next edit.lines on that file.
+      """,
+      annotations: { destructive: true },
+      params: [
+        #param { name: "expected_sha256", type: #type { kind: "string", min_len: 64, max_len: 64 },
+          description: "SHA-256 of the original bytes returned by code.read-range. A mismatch refuses the edit." },
+        #param {
+          name: "path",
+          type: #type { kind: "path", access: "read-write",
+                        must_exist: true },
+          required: true,
+          description: "Text file to edit, workspace-relative.",
+        },
+        #param {
+          name: "ops",
+          type: #type { kind: "array", min_items: 1, item: #type { kind: "object", fields: [
+            #param { name: "start", type: #type { kind: "string" },
+              required: true,
+              description: "Anchor LINE:TAG of the first (or only) line." },
+            #param { name: "end", type: #type { kind: "string" },
+              description: "Anchor of the last line of the range; replace and delete only." },
+            #param { name: "action",
+              type: #type { kind: "enum", values: ["replace", "delete", "insert_before", "insert_after"] },
+              required: true,
+              description: "What to do with the range or at the start line." },
+            #param { name: "text", type: #type { kind: "string" },
+              description: "New line(s); required unless action is delete." },
+          ] } },
+          required: true,
+          description: "Edits to apply together; their ranges must not overlap.",
+        },
+      ],
+      returns: {
+        type: #type { kind: "object", fields: [
+          #param { name: "path", type: #type { kind: "string" },
+                   description: "The edited file." },
+          #param { name: "applied", type: #type { kind: "integer" },
+                   required: true,
+                   description: "Number of ops applied." },
+          #param { name: "total_lines", type: #type { kind: "integer" },
+                   required: true,
+                   description: "Lines in the file after the edit." },
+          #param { name: "size", type: #type { kind: "integer" },
+                   required: true,
+                   description: "File size in bytes after the edit." },
+          #param { name: "sha256", type: #type { kind: "string" },
+                   required: true,
+                   description: "SHA-256 of the file after the edit." },
+        ] },
+        description: "Counters and the new version of the file.",
+      },
+      errors: [
+        { code: "edit/stale-anchor",
+          description: "A line number or tag no longer matches; nothing was changed. Read again." },
+        { code: "edit/bad-anchor",
+          description: "An anchor is not LINE:TAG, or end is before start." },
+        { code: "edit/overlap",
+          description: "Two ops touch the same lines; nothing was changed." },
+        { code: "edit/binary", description: "The file is not UTF-8 text." },
+      ],
+      examples: [
+        #example {
+          title: "Replace two lines and add one after another",
+          call: { path: "src/app.c", ops: [
+                    { start: "10:k3f", end: "11:0qz", action: "replace",
+                      text: "  int retries = 5;" },
+                    { start: "20:9aa", action: "insert_after",
+                      text: "  log_retry(retries);" } ] },
+          result: { applied: 2, total_lines: 41, size: 2071,
+                    sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" },
         },
       ],
     },

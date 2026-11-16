@@ -155,8 +155,11 @@ asngn_err asngn_loop_run(asngn_ctx *c, asngn_turn_state *t) {
      * workspace.  Quality-first coding therefore bypasses answer reuse
      * entirely; general profiles still bypass every heuristic tool/coding
      * turn. */
+    /* With the classifier off nothing says which questions need the
+     * machine, so a turn that has tools is never answered from the cache. */
     bypass_cache = t->usage_mode == ASNGN_USAGE_CHAT ||
                    c->cfg.profile == ASNGN_PROFILE_CODING ||
+                   (c->cfg.classifier == ASNGN_CLASSIFIER_OFF && pre_ev.tools_available) ||
                    pre.mode == ASNGN_MODE_PLAN || asngn_coding_task(pre.task);
   if (!bypass_cache && !t->opts.no_cache && !t->continuation &&
       c->cfg.cache_enable) {
@@ -415,6 +418,9 @@ asngn_err asngn_loop_run(asngn_ctx *c, asngn_turn_state *t) {
     snprintf(at.project,sizeof at.project,"%s",s->project ? s->project : "");
     memcpy(at.turn_id,t->span_root,37);
     e = asngn_turn_commit(t, &at);
+    if (e == ASNGN_OK && asngn_native_thread_commit(c, t, t->answer) != ASNGN_OK)
+      asngn_log(c, ASNGN_LOG_WARN, "native", "the conversation thread was not saved; "
+                "the next turn starts one from memory");
     if (e == ASNGN_OK) {
       s->turns = at.n;
       t->led.turn = at.n;

@@ -139,8 +139,10 @@ asngn_err asngn_write_atomic(asngn_ctx *c, const char *path,
 
 /* ── configuration (config.c) ─────────────────────────────────────────── */
 
+/* OFF: no classification before the turn. The generator always gets the
+ * same tools and prompt and decides by itself whether to answer or act. */
 typedef enum { ASNGN_CLASSIFIER_HEURISTIC = 0, ASNGN_CLASSIFIER_MODEL,
-               ASNGN_CLASSIFIER_HYBRID } asngn_classifier_mode;
+               ASNGN_CLASSIFIER_HYBRID, ASNGN_CLASSIFIER_OFF } asngn_classifier_mode;
 typedef enum { ASNGN_JUDGE_OFF = 0, ASNGN_JUDGE_LIGHT,
                ASNGN_JUDGE_FULL } asngn_judge_mode;
 typedef enum { ASNGN_CONFIRM_PROMPT = 0, ASNGN_CONFIRM_DENY,
@@ -172,6 +174,8 @@ typedef struct {
                        CPU only. No-op in CPU-only llama builds. */
   size_t ram_mb, vram_mb;
   bool warm, kv_cache;
+  int   tier;       /* capability rank for the ladder; -1 = pool position */
+  double bytes_per_token; /* remote models: first guess for token counts; 0 = 1 */
 } asngn_pool_entry;
 
 typedef struct {
@@ -249,6 +253,7 @@ typedef struct {
   bool astools_enable;
   char *astools_root, *astools_workspace, *astools_config;
   int tool_limit, tool_schema_bytes;
+  char *astools_core; /* native actions: tool names always offered, space separated; NULL = all selected */
   /* mcp */
   asngn_confirm_mode mcp_autoconfirm;
 } asngn_config;
@@ -563,6 +568,7 @@ typedef struct {
   char  *system_text;  /* zones 1-4: system+memory+catalog+summary   */
   char  *user_text;    /* zones 5-6: verbatim+working+instruction    */
   char  *selection_json; /* bounded private selection trace, owned */
+  char  *context_text; /* the memory module's account of the session alone, owned */
   size_t tok_system, tok_memory, tok_catalog, tok_summary, tok_verbatim,
          tok_working;
 } asngn_prompt;
@@ -763,6 +769,12 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
                                asngn_route_profile *out,
                                size_t *aux_tokens);
 const char *asngn_route_task_name(asngn_route_task k); /* "chat" ...  */
+
+/* ── the native conversation (native_thread.c) ────────────────────────── */
+void asngn_native_pending_free(struct asngn_turn_state *t);
+/* Join the committed turn to sessions/<slug>/native.thread. */
+asngn_err asngn_native_thread_commit(asngn_ctx *c, struct asngn_turn_state *t,
+                                     const char *answer);
 /* Tier ladder: index of the slot one tier above/below `slot` following
  * pool declaration order over generative models; -1 when none. */
 int asngn_route_tier_up(asngn_ctx *c, int slot);
@@ -891,6 +903,8 @@ void asngn_secrets_redact(asngn_ctx *c, char **text);
 
 asngn_err asngn_modules_open(asngn_ctx *c);
 void      asngn_modules_close(asngn_ctx *c);
+/* A turn is running (on) or over: memory curation stays off the processor. */
+void      asngn_modules_hold(asngn_ctx *c, bool on);
 /* Annotation lookup for output filtering; no mutable metadata cache. */
 asngn_err asngn_modules_annotations(asngn_ctx *c, const char *ref,
                                      const char *cmd, asngn_tool_note *out);
@@ -1033,6 +1047,8 @@ typedef struct asngn_turn_state {
   /* result */
   char          *answer;        /* owned                             */
   char          *native_answer; /* buffered proposal, still subject to response gates */
+  bool           discovered;    /* the model asked for other tools this turn */
+  struct asngn_native_thread *native_pending; /* this turn's messages, joined to the thread at commit */
   int            native_answer_tokens, native_answer_cap;
   bool           capped, clarify;
   /* streaming */

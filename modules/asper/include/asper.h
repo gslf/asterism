@@ -389,6 +389,11 @@ asper_err asper_memory_list(asper_ctx *c, asper_section s,
  * An input that cannot fit the transcript budget stops the drain with LIMIT.
  * full == 0: flush access batch + journal to disk. */
 asper_err asper_flush(asper_ctx *c, int full);
+/* The host's own model is working (on != 0) or done (on == 0); calls nest.
+ * While held the worker starts no curation or review and a running one is
+ * stopped: its turns stay queued. Work resumes once the hold has been off
+ * for curation.idle_flush. */
+void asper_hold(asper_ctx *c, int on);
 /* ASTERISM_NO_THREADS builds: run due background work on the caller.
  * Threaded builds: no-op returning ASPER_OK. */
 asper_err asper_tick(asper_ctx *c);

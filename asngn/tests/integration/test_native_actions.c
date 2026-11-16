@@ -47,7 +47,8 @@ static void inspect_request_events(eng_fx *f, bool rejected) {
     xcdn_document_free(doc);
   }
   ASSERT_EQ_INT(outcomes, request_n);
-  ASSERT_TRUE(rejected ? outcomes == 1 : outcomes >= 4 && native == 2);
+  /* Two action rounds, then the response pass over the same conversation. */
+  ASSERT_TRUE(rejected ? outcomes == 1 : outcomes >= 4 && native == 3);
   char *path = os_path_join(f->c->root,"operations.xcdn");
   xcdn_document_t *operations = NULL;
   ASSERT_TRUE(path);
@@ -134,12 +135,18 @@ TEST(native_batches_validate_before_the_first_effect) {
       "\"b\",\"name\":\"fake.mut\",\"arguments\":\"{\\\"msg\\\":\\\"mutate\\\"}\"}]",
       "[{\"id\":\"a\",\"name\":\"asterism_clarify\",\"arguments\":\"{\\\"input\\\":\\\"ask\\\","
       "\\\"extra\\\":true}\"}]"};
+  /* Nothing runs; the rejection goes back to the model, which may correct
+   * itself in the next round. */
   for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) {
     eng_fx f;
     ASSERT_TRUE(eng_setup(&f, "echo", "routing: {native_actions:true}"));
     ASSERT_TRUE(queue_lookup(&f, batches[i]));
+    ASSERT_TRUE(fake_model_push_native(&f.stdm, "[{\"id\":\"z\",\"name\":\"asterism_finish\","
+                                                "\"arguments\":\"{}\"}]"));
     asngn_turn_result r = {0};
-    ASSERT_ERR(eng_turn(&f, "Inspect fake tools", NULL, NULL, &r), ASNGN_ERR_PROTOCOL);
+    ASSERT_OK(eng_turn(&f, "Inspect fake tools", NULL, NULL, &r));
+    ASSERT_TRUE(f.stdm.last_native_results &&
+                strstr(f.stdm.last_native_results, "rejected before execution"));
     asngn_stats stats;
     ASSERT_OK(asngn_get_stats(f.c, &stats));
     ASSERT_EQ_INT(stats.tool_calls, 0);
@@ -294,8 +301,18 @@ TEST(native_contracts_preserve_profiles_and_artifact_gates) {
   t.security_profile = ASNGN_SECURITY_CODING_SANDBOXED;
   t.prof.task = ASNGN_RTASK_GENERATE;
   ASSERT_OK(asngn_native_contract_build(f.c, &t, true, contract));
+  /* Offered (a stable function list), but refused before any effect. */
+  bool offered = false;
   for (size_t i = 0; i < contract->count; i++)
-    ASSERT_TRUE(strcmp(contract->schemas[i].name, "asterism_finish"));
+    offered |= !strcmp(contract->schemas[i].name, "asterism_finish");
+  ASSERT_TRUE(offered);
+  asmodel_tool_calls proposed = {0};
+  proposed.calls[0] = (asmodel_tool_call){"f", "asterism_finish", "{}"};
+  proposed.count = 1;
+  asngn_step steps[32];
+  ASSERT_ERR(asngn_native_steps(f.c, &t, contract, &proposed, steps), ASNGN_ERR_PROTOCOL);
+  ASSERT_CONTAINS(asngn_last_error(f.c), "write the requested file first");
+  for (size_t i = 0; i < 32; i++) asngn_step_free(&steps[i]);
   asngn_step finish = {.kind = ASNGN_STEP_ANSWER};
   bool done = false;
   ASSERT_ERR(asngn_action_apply(f.c, &t, &finish, false, false, false, &done), ASNGN_ERR_PROTOCOL);

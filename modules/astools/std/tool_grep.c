@@ -17,6 +17,7 @@
 #endif
 
 #include "sdk.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -47,6 +48,7 @@ typedef struct {
   int case_sensitive;
   const char *glob; /* may be NULL */
   int recursive;
+  int anchors; /* add anchor "LINE:TAG" to every match */
   int64_t context;
   int64_t max_results;
   int64_t max_file_bytes;
@@ -202,6 +204,12 @@ static void scan_buffer(gctx *g, const char *rel, const char *buf, size_t n) {
       rc |= astd_set_str(m, "path", rel);
       rc |= astd_set_int(m, "line", (int64_t)(i + 1));
       rc |= astd_set_int(m, "column", (int64_t)col + 1);
+      if (g->anchors) {
+        char tag[4], anchor[32];
+        astd_line_tag(line, tl, tag);
+        snprintf(anchor, sizeof anchor, "%lld:%s", (long long)(i + 1), tag);
+        rc |= astd_set_str(m, "anchor", anchor);
+      }
       if (rc == 0) {
         xcdn_value_t *tv = text_value(line, tl);
         if (!tv) {
@@ -385,6 +393,7 @@ int astd_tool_grep(astd_req *r) {
   g.case_sensitive = astd_arg_bool(r, "case_sensitive", 1);
   g.glob = astd_arg_str(r, "glob", NULL);
   g.recursive = astd_arg_bool(r, "recursive", 1);
+  g.anchors = astd_arg_bool(r, "anchors", 0);
   g.context = clamp64(astd_arg_int(r, "context", 0), 0, 10);
   g.max_results = clamp64(astd_arg_int(r, "max_results", 200), 1, 1000);
   g.max_file_bytes = astd_arg_int(r, "max_file_bytes", 1048576);

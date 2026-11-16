@@ -19,6 +19,24 @@ module; they live in `~/asterism/tools/`.
 | `sys` | report the system: OS, processor, memory |
 | `delegate` | hand a coding task to Codex or Claude Code |
 
+## Editing by line anchor
+
+The most reliable way for a model to change a file:
+
+- `fs.read` with `anchors: true` shows every line as `LINE:TAG|text`, for
+  example `42:ab3|int x = 1;`. The tag is three characters made from the
+  line's content (spaces at the end of the line do not count).
+  `code.read-range` and `grep.search` take `anchors: true` too.
+- `edit.lines` takes a file and a list of changes. Each change names a line
+  (`start: "42:ab3"`) or a range (`start` and `end`) and an action:
+  `replace`, `delete`, `insert_before` or `insert_after`, with the new `text`.
+  The model never has to repeat the old text.
+- If a line number or tag no longer matches the file, nothing is changed and
+  the error shows the line as it is now; the agent reads again and retries.
+- Two changes in one call may not touch the same lines.
+
+`edit.replace`, `edit.insert` and `edit.patch` still work as before.
+
 ## Where they work
 
 The tools work only inside the work folder: the conversation's own folder,

@@ -20,7 +20,8 @@ bool asngn_artifact_command(const char *ref, const char *cmd) {
   if (asngn_tool_ref_is(ref, "fs") && strcmp(cmd, "write") == 0) return true;
   if (asngn_tool_ref_is(ref, "fs")) return false; /* mkdir/move is not content */
   if (asngn_tool_ref_is(ref, "edit") &&
-      (strcmp(cmd, "replace") == 0 || strcmp(cmd, "insert") == 0 || strcmp(cmd, "patch") == 0))
+      (strcmp(cmd, "replace") == 0 || strcmp(cmd, "insert") == 0 || strcmp(cmd, "patch") == 0 ||
+       strcmp(cmd, "lines") == 0))
     return true;
   if (asngn_tool_ref_is(ref, "edit")) return false;
   /* Extensible mutating tools (proc generators, custom scaffolds, test

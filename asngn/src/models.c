@@ -187,6 +187,10 @@ asngn_err asngn_models_generate_input(asngn_ctx *c, int slot, asngn_task_kind ta
       extra += strlen(v->name)+strlen(v->description)+strlen(v->parameters)+128;
     }
   }
+  /* Schemas are counted in bytes; a remote model with a declared ratio
+   * counts them the way it counts the messages. */
+  if (c->models[slot].cfg.bytes_per_token > 1.0)
+    extra = (size_t)((double)extra / c->models[slot].cfg.bytes_per_token) + 1;
   asngn_context_diagnostics budget = {0};
   char request[37];
   core_uuid_v4(request);

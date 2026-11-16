@@ -1,5 +1,6 @@
 /* Buffer and validate a user-facing response, with optional review. */
 #include "execution.h"
+#include "native.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -154,6 +155,17 @@ static asngn_err answer_once(asngn_ctx *c, asngn_turn_state *t, bool stream, cha
     trailer = "Write only your response to the user's message above. The "
               "response must not contain or simulate a tool invocation.";
 
+  if (c->cfg.native_actions && t->native_pending && !t->continuation) {
+    e = asngn_native_answer(c, t, trailer, cap, stream ? asngn_output_stream : NULL,
+                            stream ? t : NULL, out, &tout);
+    if (e == ASNGN_OK) {
+      if (out_tokens != NULL) *out_tokens = tout;
+      if (effective_cap != NULL) *effective_cap = cap;
+      return ASNGN_OK;
+    }
+    if (e == ASNGN_ERR_CANCELLED || e == ASNGN_ERR_TIMEOUT) return e;
+  }
+
   /* `max_tokens` is transport metadata and the model cannot see it.  Build
    * the prompt with the real effective ceiling, shrinking it when prompt
    * occupancy leaves less room than the configured detail cap.  Rebuilding
@@ -229,6 +241,10 @@ asngn_err asngn_answer_run(asngn_ctx *c, asngn_turn_state *t, size_t *aux_tokens
     judge_this = true;
     break;
   }
+  /* A judge weaker than the model that wrote the answer adds a pass and no
+   * information; with the classifier off only an explicit "full" keeps it. */
+  if (c->cfg.classifier == ASNGN_CLASSIFIER_OFF && c->cfg.judge != ASNGN_JUDGE_FULL)
+    judge_this = false;
   if (t->clarify) judge_this = false;
 
   for (attempt = 0; attempt < 3; attempt++) {

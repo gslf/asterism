@@ -88,6 +88,7 @@ asngn_err asngn_model_provider_create(asngn_ctx *c,
   spec.api_key_env = e->api_key_env;
   spec.remote_provider = e->remote_provider;
   spec.context_tokens = e->ctx; spec.threads = e->threads;
+  spec.bytes_per_token = e->bytes_per_token;
   spec.gpu_layers = e->gpu_layers; spec.kv_cache = e->kv_cache;
   spec.embedding = e->embedding; spec.embedding_dim = e->dim;
   u = (provider_ud *)calloc(1, sizeof *u);

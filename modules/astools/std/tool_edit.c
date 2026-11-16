@@ -1,5 +1,5 @@
 /*
- * tool_edit.c — edit.replace / edit.insert / edit.patch.
+ * tool_edit.c — edit.replace / edit.insert / edit.lines / edit.patch.
  *
  * Common behavior: the target is read whole; a NUL byte in the first
  * 4 KiB means edit/binary. Content is normalized to LF for editing; the
@@ -17,6 +17,11 @@
  *
  * insert: content becomes line 'line'+1 (line 0 prepends, past-EOF
  * appends).
+ *
+ * lines: edits by line anchor "LINE:TAG" (see anchor.c). Every anchor of
+ * every op is checked against the file as it is (line number and tag), and
+ * ops may not overlap; only then is the new content built in one pass over
+ * the original lines and written once. A stale anchor changes nothing.
  *
  * patch: unified diff. Target paths come from the patch text itself, so
  * the runtime could not pre-check them; the tool enforces containment:
@@ -587,6 +592,291 @@ oom:
   free(ls);
   free(cs);
   astd_fail(r, "edit/io", "out of memory");
+}
+
+/* ---- lines -------------------------------------------------------------- */
+
+enum { LOP_REPLACE, LOP_DELETE, LOP_BEFORE, LOP_AFTER };
+
+typedef struct {
+  int kind;
+  size_t index;      /* 1-based position in the call, for messages */
+  size_t s, e;       /* 1-based inclusive line range */
+  size_t lo, hi;     /* occupied span: line L is 2L, the gap after it 2L+1 */
+  char *text;        /* LF-normalized, one trailing newline dropped */
+  size_t text_n;
+} lop;
+
+static int lop_cmp(const void *a, const void *b) {
+  const lop *x = a, *y = b;
+  if (x->lo != y->lo) return x->lo < y->lo ? -1 : 1;
+  return x->index < y->index ? -1 : x->index > y->index;
+}
+
+static const char *item_str(const xcdn_value_t *item, const char *key) {
+  const xcdn_node_t *n = xcdn_object_get(item, key);
+  if (!n || !n->value || n->value->type != XCDN_VAL_STRING) return NULL;
+  return n->value->data.string;
+}
+
+/* Resolve one anchor against the current lines. On failure writes the
+ * message, sets *code and returns -1. */
+static int resolve_anchor(const char *norm, const espan *ls, size_t nls,
+                          const char *anchor, const char *which, size_t opi,
+                          size_t *line_out, const char **code, char *emsg,
+                          size_t emsg_sz) {
+  int64_t line = 0;
+  char want[4], have[4];
+  size_t k, show, near = 0;
+  if (astd_anchor_parse(anchor, &line, want) != 0) {
+    *code = "edit/bad-anchor";
+    snprintf(emsg, emsg_sz,
+             "op %lu: %s '%.40s' is not an anchor; use LINE:TAG from a read "
+             "with anchors:true, for example 42:ab3",
+             (unsigned long)opi, which, anchor);
+    return -1;
+  }
+  *code = "edit/stale-anchor";
+  if ((uint64_t)line > nls) {
+    snprintf(emsg, emsg_sz,
+             "op %lu: %s %lld:%s is stale: the file now has %lu lines. "
+             "Nothing was changed; read the file again with anchors:true",
+             (unsigned long)opi, which, (long long)line, want,
+             (unsigned long)nls);
+    return -1;
+  }
+  k = (size_t)line - 1;
+  astd_line_tag(norm + ls[k].off, ls[k].len, have);
+  if (strcmp(want, have) == 0) {
+    *line_out = (size_t)line;
+    return 0;
+  }
+  /* the nearest line that still carries the wanted tag, as a hint */
+  for (k = 0; k < nls; k++) {
+    char t[4];
+    size_t d, best;
+    astd_line_tag(norm + ls[k].off, ls[k].len, t);
+    if (strcmp(t, want) != 0) continue;
+    d = k + 1 > (size_t)line ? k + 1 - (size_t)line : (size_t)line - (k + 1);
+    best = near > (size_t)line ? near - (size_t)line : (size_t)line - near;
+    if (near == 0 || d < best) near = k + 1;
+  }
+  k = (size_t)line - 1;
+  show = ls[k].len > 60 ? 60 : ls[k].len;
+  while (show > 0 && show < ls[k].len &&
+         ((unsigned char)norm[ls[k].off + show] & 0xc0) == 0x80)
+    show--;
+  if (near != 0)
+    snprintf(emsg, emsg_sz,
+             "op %lu: %s %lld:%s is stale: line %lld is now %lld:%s|%.*s "
+             "(tag %s is now on line %lu). Nothing was changed; read the "
+             "file again with anchors:true",
+             (unsigned long)opi, which, (long long)line, want,
+             (long long)line, (long long)line, have, (int)show,
+             norm + ls[k].off, want, (unsigned long)near);
+  else
+    snprintf(emsg, emsg_sz,
+             "op %lu: %s %lld:%s is stale: line %lld is now %lld:%s|%.*s. "
+             "Nothing was changed; read the file again with anchors:true",
+             (unsigned long)opi, which, (long long)line, want,
+             (long long)line, (long long)line, have, (int)show,
+             norm + ls[k].off);
+  return -1;
+}
+
+static void cmd_lines(astd_req *r) {
+  const char *path = astd_arg_str(r, "path", NULL);
+  const xcdn_value_t *ops = astd_arg(r, "ops");
+  const char *code = "edit/io";
+  char emsg[512], version[65], after[65];
+  char *raw = NULL, *norm = NULL, *outraw = NULL;
+  size_t rawn = 0, nn = 0, outn = 0, nls = 0, nops = 0, i, cur, total = 0;
+  mode_t mode = 0644;
+  int crlf = 0, had_nl;
+  espan *ls = NULL;
+  lop *lo = NULL;
+  ebuf out;
+  out.d = NULL;
+  out.n = out.cap = 0;
+  if (!path || !ops || ops->type != XCDN_VAL_ARRAY ||
+      xcdn_array_len(ops) == 0) {
+    astd_fail(r, "astools/invalid-args",
+              "lines requires 'path' and a non-empty 'ops' list");
+    return;
+  }
+  if (read_raw(path, &raw, &rawn, &mode, emsg, sizeof emsg) != 0) {
+    astd_fail(r, "edit/io", "%s", emsg);
+    return;
+  }
+  if (!expected_version(r, raw, rawn, version)) { free(raw); return; }
+  if (astd_looks_binary(raw, rawn)) {
+    free(raw);
+    astd_fail(r, "edit/binary", "'%s' looks binary (NUL in first 4KiB)",
+              path);
+    return;
+  }
+  norm = normalize_lf(raw, rawn, &nn, &crlf);
+  free(raw);
+  if (!norm) goto oom;
+  ls = split_spans(norm, nn, &nls);
+  nops = xcdn_array_len(ops);
+  lo = calloc(nops, sizeof *lo);
+  if (!ls || !lo) goto oom;
+  had_nl = nn > 0 && norm[nn - 1] == '\n';
+
+  /* 1. read and check every op against the file as it is now */
+  for (i = 0; i < nops; i++) {
+    const xcdn_node_t *node = xcdn_array_get(ops, i);
+    const xcdn_value_t *item = node ? node->value : NULL;
+    const char *start, *end, *action, *text;
+    lop *o = &lo[i];
+    o->index = i + 1;
+    if (!item || item->type != XCDN_VAL_OBJECT) {
+      code = "astools/invalid-args";
+      snprintf(emsg, sizeof emsg, "op %lu is not an object",
+               (unsigned long)(i + 1));
+      goto fail;
+    }
+    start = item_str(item, "start");
+    end = item_str(item, "end");
+    action = item_str(item, "action");
+    text = item_str(item, "text");
+    if (!start || !action) {
+      code = "astools/invalid-args";
+      snprintf(emsg, sizeof emsg, "op %lu needs 'start' and 'action'",
+               (unsigned long)(i + 1));
+      goto fail;
+    }
+    if (strcmp(action, "replace") == 0) o->kind = LOP_REPLACE;
+    else if (strcmp(action, "delete") == 0) o->kind = LOP_DELETE;
+    else if (strcmp(action, "insert_before") == 0) o->kind = LOP_BEFORE;
+    else if (strcmp(action, "insert_after") == 0) o->kind = LOP_AFTER;
+    else {
+      code = "astools/invalid-args";
+      snprintf(emsg, sizeof emsg,
+               "op %lu: action must be replace, delete, insert_before or "
+               "insert_after", (unsigned long)(i + 1));
+      goto fail;
+    }
+    if (o->kind != LOP_DELETE && !text) {
+      code = "astools/invalid-args";
+      snprintf(emsg, sizeof emsg, "op %lu: %s needs 'text'",
+               (unsigned long)(i + 1), action);
+      goto fail;
+    }
+    if (end && (o->kind == LOP_BEFORE || o->kind == LOP_AFTER)) {
+      code = "astools/invalid-args";
+      snprintf(emsg, sizeof emsg, "op %lu: %s takes only 'start', not 'end'",
+               (unsigned long)(i + 1), action);
+      goto fail;
+    }
+    if (resolve_anchor(norm, ls, nls, start, "start", i + 1, &o->s, &code,
+                       emsg, sizeof emsg) != 0)
+      goto fail;
+    o->e = o->s;
+    if (end && resolve_anchor(norm, ls, nls, end, "end", i + 1, &o->e, &code,
+                              emsg, sizeof emsg) != 0)
+      goto fail;
+    if (o->e < o->s) {
+      code = "edit/bad-anchor";
+      snprintf(emsg, sizeof emsg, "op %lu: end line %lu is before start line %lu",
+               (unsigned long)(i + 1), (unsigned long)o->e,
+               (unsigned long)o->s);
+      goto fail;
+    }
+    if (o->kind == LOP_BEFORE) o->lo = o->hi = 2 * o->s - 1;
+    else if (o->kind == LOP_AFTER) o->lo = o->hi = 2 * o->s + 1;
+    else { o->lo = 2 * o->s; o->hi = 2 * o->e; }
+    if (o->kind != LOP_DELETE) {
+      int dummy = 0;
+      o->text = normalize_lf(text, strlen(text), &o->text_n, &dummy);
+      if (!o->text) goto oom;
+      if (o->text_n > 0 && o->text[o->text_n - 1] == '\n') o->text_n--;
+    }
+  }
+
+  /* 2. no two ops may touch the same lines or the same gap */
+  qsort(lo, nops, sizeof *lo, lop_cmp);
+  for (i = 1; i < nops; i++) {
+    if (lo[i].lo <= lo[i - 1].hi) {
+      code = "edit/overlap";
+      snprintf(emsg, sizeof emsg,
+               "ops %lu and %lu overlap (lines %lu-%lu and %lu-%lu); merge "
+               "them into one op. Nothing was changed",
+               (unsigned long)lo[i - 1].index, (unsigned long)lo[i].index,
+               (unsigned long)lo[i - 1].s, (unsigned long)lo[i - 1].e,
+               (unsigned long)lo[i].s, (unsigned long)lo[i].e);
+      goto fail;
+    }
+  }
+
+  /* 3. one pass over the original lines; every op still sees the line
+   * numbers it was written against, as a bottom-up apply would */
+  cur = 1;
+#define COPY_TO(LAST)                                                       \
+  for (; cur <= (LAST); cur++) {                                            \
+    if (eb_put(&out, norm + ls[cur - 1].off, ls[cur - 1].len) != 0 ||       \
+        eb_ch(&out, '\n') != 0)                                             \
+      goto oom;                                                             \
+    total++;                                                                \
+  }
+  for (i = 0; i < nops; i++) {
+    const lop *o = &lo[i];
+    size_t k;
+    if (o->kind == LOP_AFTER) { COPY_TO(o->s) }
+    else { COPY_TO(o->s - 1) }
+    if (o->kind != LOP_DELETE) {
+      if (eb_put(&out, o->text, o->text_n) != 0 || eb_ch(&out, '\n') != 0)
+        goto oom;
+      total++;
+      for (k = 0; k < o->text_n; k++)
+        if (o->text[k] == '\n') total++;
+    }
+    if (o->kind == LOP_REPLACE || o->kind == LOP_DELETE) cur = o->e + 1;
+  }
+  COPY_TO(nls)
+#undef COPY_TO
+  if (!had_nl && out.n > 0) out.n--; /* keep "no newline at end of file" */
+  outraw = denorm(out.d ? out.d : "", out.n, crlf, &outn);
+  if (!outraw) goto oom;
+  if (write_atomic(path, outraw, outn, mode, version, emsg, sizeof emsg) != 0) {
+    code = "edit/io";
+    goto fail;
+  }
+  astd_version(outraw, outn, after);
+  {
+    xcdn_value_t *res = xcdn_value_object();
+    if (!res || astd_set_int(res, "applied", (int64_t)nops) != 0 ||
+        astd_set_int(res, "total_lines", (int64_t)total) != 0 ||
+        astd_set_int(res, "size", (int64_t)outn) != 0 ||
+        astd_set_str(res, "sha256", after) != 0 ||
+        astd_set_str(res, "path", path) != 0) {
+      if (res) xcdn_value_free(res);
+      code = "edit/io";
+      snprintf(emsg, sizeof emsg, "edit applied but result reporting failed");
+      goto fail;
+    }
+    for (i = 0; i < nops; i++) free(lo[i].text);
+    free(lo);
+    free(ls);
+    free(norm);
+    free(out.d);
+    free(outraw);
+    astd_ok(r, res);
+  }
+  return;
+oom:
+  code = "edit/io";
+  snprintf(emsg, sizeof emsg, "out of memory");
+fail:
+  if (lo)
+    for (i = 0; i < nops; i++) free(lo[i].text);
+  free(lo);
+  free(ls);
+  free(norm);
+  free(out.d);
+  free(outraw);
+  astd_fail(r, code, "%s", emsg);
 }
 
 /* ---- patch -------------------------------------------------------------- */
@@ -1418,6 +1708,8 @@ int astd_tool_edit(astd_req *r) {
     cmd_insert(r);
   else if (strcmp(r->command, "patch") == 0)
     cmd_patch(r);
+  else if (strcmp(r->command, "lines") == 0)
+    cmd_lines(r);
   else
     astd_fail(r, "astools/protocol", "unknown edit command '%s'", r->command);
   return 0;

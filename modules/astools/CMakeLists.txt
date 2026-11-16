@@ -60,7 +60,7 @@ endif()
 # ── astools-std: the standard tools, one busybox-style binary ───────────────
 set(ASTOOLS_STD_TOOLS fs grep edit sys env proc git code project delegate)
 set(ASTOOLS_STD_SOURCES
-  std/main.c std/version.c std/sdk.c std/regex.c
+  std/main.c std/version.c std/sdk.c std/regex.c std/anchor.c
   std/tool_fs.c std/tool_grep.c std/tool_edit.c std/tool_sys.c std/tool_env.c
   std/tool_proc.c std/process_capture.c std/process_output.c std/tool_git.c
   std/tool_code.c std/tool_project.c std/project_receipt.c

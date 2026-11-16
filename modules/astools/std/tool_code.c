@@ -106,10 +106,15 @@ static void cmd_read_range(astd_req *r) {
   if (start <= total && from == n) from = n;
   if (start > total) from = to = n;
   else if (to == n) to = n;
-  content = malloc(to - from + 1);
-  if (!content) goto oom;
-  memcpy(content, buf + from, to - from);
-  content[to - from] = '\0';
+  if (astd_arg_bool(r, "anchors", 0)) {
+    content = astd_anchor_text(buf + from, to - from, start, NULL);
+    if (!content) goto oom;
+  } else {
+    content = malloc(to - from + 1);
+    if (!content) goto oom;
+    memcpy(content, buf + from, to - from);
+    content[to - from] = '\0';
+  }
   actual_end = total < end ? total : end;
   if (actual_end < start) actual_end = start - 1;
 

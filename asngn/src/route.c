@@ -423,6 +423,28 @@ static asngn_route_task route_merge_task(asngn_route_task heur,
   return model;
 }
 
+/* CLASS and DETAIL merge. Taking the higher of the two votes made every
+ * error one-directional: a router model that says MODERATE out of habit
+ * could never be corrected downwards, so the class carried no information.
+ * The model's vote now stands, and the heuristic is a floor only where its
+ * evidence is hard (an operational task, or code pasted in the message). */
+static bool route_hard_evidence(const char *message,
+                                const asngn_route_profile *heur) {
+  return route_task_requires_tools(heur->task) ||
+         (message != NULL && strstr(message, "```") != NULL);
+}
+
+static void route_merge_votes(const char *message,
+                              const asngn_route_profile *heur,
+                              const asngn_route_profile *model,
+                              asngn_route_profile *out) {
+  bool hard = route_hard_evidence(message, heur);
+  out->klass = hard && heur->klass > model->klass ? heur->klass : model->klass;
+  out->detail = heur->detail == ASNGN_DETAIL_RICH || (hard && heur->detail > model->detail)
+                    ? heur->detail
+                    : model->detail;
+}
+
 /* Families the message itself evidences (explicit names, paths, search
  * and git vocabulary). Kept apart from route_task_tools so the CLASS
  * multi-tool bonus never double-counts the task kind's own weight. */
@@ -774,11 +796,11 @@ static asngn_err route_model_pass(asngn_ctx *c, asngn_session *s,
                                   size_t *aux_tokens) {
   int slot, tin = 0, tout = 0;
   char *gbnf = NULL, *text = NULL;
-  char tools[32];
   core_buf up;
   size_t len, cut;
   asngn_err e;
 
+  (void)heur;
   slot = asngn_models_slot_for_role(c, ASNGN_ROLE_ROUTER);
   if (slot < 0)
     return asngn_seterr(c, ASNGN_ERR_MODEL,
@@ -788,14 +810,14 @@ static asngn_err route_model_pass(asngn_ctx *c, asngn_session *s,
 
   len = strlen(message);
   cut = route_utf8_prefix(message, len);
-  route_tools_string(heur->toolmask, tools, sizeof tools);
   core_buf_init(&up);
   if (asngn_buf_printf(
           &up,
-          "evidence: heuristic_task=%s hinted_tools=%s tools_available=%s "
+          /* The heuristic's own verdict is not shown: a small model copies
+           * it, and the two votes stop being independent. */
+          "evidence: tools_available=%s "
           "lang=%s repo_files=%zu "
           "recent_escalations=%d\n",
-          asngn_route_task_name(heur->task), tools,
           ev->tools_available ? "yes" : "no",
           ev->repo_language[0] != '\0' ? ev->repo_language : "unknown",
           ev->repo_files, ev->escalated) != ASNGN_OK) {
@@ -947,6 +969,19 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
   *out = heur;
 
   switch (c->cfg.classifier) {
+    case ASNGN_CLASSIFIER_OFF:
+      /* The generator is the router: it always gets the tools and decides
+       * by itself whether to answer or act. Nothing read off the message
+       * gates what it may do or how much it may write, and the prompt does
+       * not depend on a verdict, so a server that keeps the previous
+       * prompt's state reuses it. */
+      out->klass = ASNGN_CLASS_MODERATE;
+      out->detail = ASNGN_DETAIL_NORMAL;
+      out->task = ASNGN_RTASK_CHAT;
+      out->toolmask = 0;
+      out->mode = ev.tools_available ? ASNGN_MODE_PLAN : ASNGN_MODE_DIRECT;
+      route_emit(c, s, out, &ev, "off");
+      return ASNGN_OK;
     case ASNGN_CLASSIFIER_HEURISTIC:
       break;
     case ASNGN_CLASSIFIER_MODEL:
@@ -959,9 +994,7 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
                            aux_tokens);
       if (e != ASNGN_OK) return e;
       {
-        out->klass = model.klass > heur.klass ? model.klass : heur.klass;
-        out->detail =
-            model.detail > heur.detail ? model.detail : heur.detail;
+        route_merge_votes(message, &heur, &model, out);
         out->task = route_merge_task(heur.task, model.task);
         out->toolmask = heur.toolmask | route_task_tools(heur.task) |
                         route_task_tools(model.task);
@@ -986,7 +1019,7 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
                            aux_tokens);
       if (e != ASNGN_OK) return e;
       {
-        out->klass = model.klass > heur.klass ? model.klass : heur.klass;
+        route_merge_votes(message, &heur, &model, out);
         out->task = route_merge_task(heur.task, model.task);
         out->toolmask = heur.toolmask | route_task_tools(heur.task) |
                         route_task_tools(model.task);
@@ -997,8 +1030,6 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
                             route_task_requires_tools(out->task))
                                ? ASNGN_MODE_PLAN
                                : ASNGN_MODE_DIRECT);
-        out->detail =
-            model.detail > heur.detail ? model.detail : heur.detail;
         source = "hybrid";
       }
       break;
@@ -1025,18 +1056,37 @@ asngn_err asngn_route_classify(asngn_ctx *c, asngn_session *s,
  * declaration order and capability order coincide; a config that declares
  * generative models out of order gets the ladder it declared. */
 
-int asngn_route_tier_up(asngn_ctx *c, int slot) {
-  size_t i;
-  if (c == NULL || slot < 0 || (size_t)slot >= c->cfg.pool_n) return -1;
-  for (i = (size_t)slot + 1; i < c->cfg.pool_n; i++)
-    if (!c->cfg.pool[i].embedding) return (int)i;
-  return -1;
+static int route_rank(const asngn_ctx *c, size_t i) {
+  return c->cfg.pool[i].tier >= 0 ? c->cfg.pool[i].tier : (int)i;
 }
 
-int asngn_route_tier_down(asngn_ctx *c, int slot) {
+/* Nearest generative entry above (dir > 0) or below the slot's rank. A pool
+ * entry may declare `tier`; without it the rank is the pool position. Equal
+ * ranks fall back to pool order. */
+static int route_tier_step(asngn_ctx *c, int slot, int dir) {
   size_t i;
-  if (c == NULL || slot <= 0 || (size_t)slot >= c->cfg.pool_n) return -1;
-  for (i = (size_t)slot; i-- > 0;)
-    if (!c->cfg.pool[i].embedding) return (int)i;
-  return -1;
+  int best = -1, here;
+  if (c == NULL || slot < 0 || (size_t)slot >= c->cfg.pool_n) return -1;
+  here = route_rank(c, (size_t)slot);
+  for (i = 0; i < c->cfg.pool_n; i++) {
+    int r;
+    bool beyond, closer;
+    if (c->cfg.pool[i].embedding || (int)i == slot) continue;
+    r = route_rank(c, i);
+    beyond = dir > 0 ? (r > here || (r == here && (int)i > slot))
+                     : (r < here || (r == here && (int)i < slot));
+    if (!beyond) continue;
+    if (best < 0) { best = (int)i; continue; }
+    {
+      int br = route_rank(c, (size_t)best);
+      closer = dir > 0 ? (r < br || (r == br && (int)i < best))
+                       : (r > br || (r == br && (int)i > best));
+    }
+    if (closer) best = (int)i;
+  }
+  return best;
 }
+
+int asngn_route_tier_up(asngn_ctx *c, int slot) { return route_tier_step(c, slot, 1); }
+
+int asngn_route_tier_down(asngn_ctx *c, int slot) { return route_tier_step(c, slot, -1); }

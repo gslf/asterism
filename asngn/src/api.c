@@ -437,7 +437,8 @@ static asngn_err startup_readiness(asngn_ctx *c) {
     int slot = c->role_slot[r];
     bool required = true;
     if (r == ASNGN_ROLE_ROUTER &&
-        c->cfg.classifier == ASNGN_CLASSIFIER_HEURISTIC)
+        (c->cfg.classifier == ASNGN_CLASSIFIER_HEURISTIC ||
+         c->cfg.classifier == ASNGN_CLASSIFIER_OFF))
       required = false;
     else if (r == ASNGN_ROLE_ADAPTER && !c->cfg.cache_enable)
       required = false;
@@ -1013,6 +1014,7 @@ void asngn_turn_state_free(asngn_turn_state *t) {
   free(t->tools_list);
   free(t->answer);
   free(t->native_answer);
+  asngn_native_pending_free(t);
   memset(t, 0, sizeof *t);
 }
 
@@ -1116,8 +1118,10 @@ static asngn_err submit_common(asngn_session *s, char *gated_msg,
   os_rwlock_wrunlock(&s->lock);
 
   {
+    asngn_modules_hold(c, true); /* memory curation waits for the turn */
     asngn_err e = asngn_worker_submit(c, task);
     if (e != ASNGN_OK) {
+      asngn_modules_hold(c, false);
       asngn_project_release(c, task->project);
       os_rwlock_wrlock(&s->lock);
       s->busy = false;

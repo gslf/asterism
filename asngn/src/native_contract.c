@@ -13,6 +13,15 @@ static void control(asngn_native_contract *out, asngn_step_kind kind, const char
   out->kinds[n] = kind;
 }
 
+/* Whole-word match of a tool name in the space-separated core list. */
+static bool in_core(const char *list, const char *tool) {
+  size_t n = strlen(tool);
+  for (const char *p = list; (p = strstr(p, tool)) != NULL; p += n)
+    if ((p == list || p[-1] == ' ' || p[-1] == ',') && (p[n] == 0 || p[n] == ' ' || p[n] == ','))
+      return true;
+  return false;
+}
+
 asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool call_now,
                                       asngn_native_contract *out) {
   memset(out, 0, sizeof *out);
@@ -21,8 +30,29 @@ asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool ca
     return asngn_seterr(
         c, ASNGN_ERR_CONFIG,
         "native actions reserve five control functions; configure tool_limit <= 59");
-  for (size_t i = 0; call_now && i < n; i++) {
-    const astools_selected_command *v = astools_selection_get(t->tool_selection, i);
+  /* Functions in name order, not relevance order: the same tools then give
+   * the same prompt opening, which inference servers reuse across requests
+   * instead of evaluating it again. */
+  size_t order[59];
+  for (size_t i = 0; i < n; i++) {
+    size_t k = i;
+    const char *name = astools_selection_get(t->tool_selection, i)->tool;
+    while (k && strcmp(astools_selection_get(t->tool_selection, order[k - 1])->tool, name) > 0) {
+      order[k] = order[k - 1];
+      k--;
+    }
+    order[k] = i;
+  }
+  /* A short fixed list reads better than every tool the registry has, and
+   * it is the same for every message, so the prompt opening is reused. The
+   * rest stays one asterism_discover away; after one, this turn offers
+   * what was found. */
+  const char *core = c->cfg.astools_core && *c->cfg.astools_core && !t->discovered
+                         ? c->cfg.astools_core : NULL;
+  for (size_t at = 0; call_now && at < n; at++) {
+    const astools_selected_command *v = astools_selection_get(t->tool_selection, order[at]);
+    if (core && !in_core(core, v->tool)) continue;
+    size_t i = out->count;
     uint8_t hash[32];
     char hex[65];
     core_sha256_ctx sha;
@@ -32,7 +62,21 @@ asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool ca
     core_sha256_update(&sha, v->content_sha256, strlen(v->content_sha256));
     core_sha256_final(&sha, hash);
     core_sha256_hex(hash, 32, hex);
-    snprintf(out->names[i], sizeof out->names[i], "t_%.60s", hex);
+    /* Models call tools by readable names: an opaque hash makes them invent
+     * one from the description. proc.run becomes proc_run; a name that does
+     * not fit, collides, or takes the engine's asterism_ prefix falls back to
+     * the hash. The call still binds to the selected command, not the name. */
+    size_t len = strlen(v->tool);
+    bool readable = len > 0 && len < sizeof out->names[i] && strncmp(v->tool, "asterism", 8);
+    for (size_t k = 0; readable && k < len; k++) {
+      char ch = v->tool[k];
+      out->names[i][k] = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                         (ch >= '0' && ch <= '9') || ch == '-' ? ch : '_';
+    }
+    if (readable) out->names[i][len] = 0;
+    for (size_t j = 0; readable && j < i; j++)
+      if (!strcmp(out->names[i], out->names[j])) readable = false;
+    if (!readable) snprintf(out->names[i], sizeof out->names[i], "t_%.60s", hex);
     snprintf(out->descriptions[i], sizeof out->descriptions[i], "%s: %.1024s", v->tool, v->summary);
     size_t bytes = strlen(out->descriptions[i]);
     while (bytes && !core_utf8_valid(out->descriptions[i], bytes))
@@ -53,8 +97,10 @@ asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool ca
     control(out, ASNGN_STEP_RECALL, "asterism_recall", "Retrieve memory evidence for a question.",
             "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\",\"minLength\":1,"
             "\"maxLength\":2048}},\"required\":[\"input\"],\"additionalProperties\":false}");
-  if (t->s->blobs_n)
-    control(out, ASNGN_STEP_OPEN, "asterism_open",
+  /* The control functions are always offered, so the function list (and
+   * the prompt opening that holds it) stays the same; asngn_native_steps
+   * rejects the ones that do not apply yet, and the model is told why. */
+  control(out, ASNGN_STEP_OPEN, "asterism_open",
             "Read a redacted evidence blob at an explicit byte offset.",
             "{\"type\":\"object\",\"properties\":{\"blob\":{\"type\":\"integer\",\"minimum\":1},"
             "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":4294967295}},"
@@ -63,8 +109,7 @@ asngn_err asngn_native_contract_build(asngn_ctx *c, asngn_turn_state *t, bool ca
           "Ask the user for missing information needed to proceed.",
           "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\",\"minLength\":1,"
           "\"maxLength\":2048}},\"required\":[\"input\"],\"additionalProperties\":false}");
-  if (!asngn_generation_needs_artifact(c, t))
-    control(out, ASNGN_STEP_ANSWER, "asterism_finish",
+  control(out, ASNGN_STEP_ANSWER, "asterism_finish",
             "End actions and prepare a user response. This does not certify task success.",
             "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}");
   return ASNGN_OK;
@@ -113,6 +158,11 @@ asngn_err asngn_native_steps(asngn_ctx *c, asngn_turn_state *t,
     if (j == contract->count) return ASNGN_ERR_PROTOCOL;
     const astools_selected_command *v = contract->commands[j];
     steps[i].kind = contract->kinds[j];
+    if (steps[i].kind == ASNGN_STEP_ANSWER && asngn_generation_needs_artifact(c, t))
+      return asngn_seterr(c, ASNGN_ERR_PROTOCOL,
+                          "asterism_finish is not available yet: write the requested file first");
+    if (steps[i].kind == ASNGN_STEP_OPEN && !t->s->blobs_n)
+      return asngn_seterr(c, ASNGN_ERR_PROTOCOL, "asterism_open: this session has no evidence blob");
     if (calls->count > 1 && (!v || !v->read_only || v->destructive))
       return asngn_seterr(c, ASNGN_ERR_PROTOCOL,
                           "native batch must contain only read-only, non-destructive tools");

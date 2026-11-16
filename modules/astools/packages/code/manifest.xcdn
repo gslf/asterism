@@ -36,7 +36,9 @@
       description: """
         Returns at most 1000 lines, preserving their original line endings.
         start_line and end_line are 1-based and inclusive. Use the returned
-        total_lines and truncated fields to choose the next range.
+        total_lines and truncated fields to choose the next range. With
+        anchors true each line comes back as LINE:TAG|text, ready for
+        edit.lines.
       """,
       annotations: { read_only: true, idempotent: true },
       params: [
@@ -47,6 +49,8 @@
           default: 1, description: "First line to return (inclusive)." },
         #param { name: "end_line", type: #type { kind: "integer", min: 1 },
           default: 200, description: "Last line to return (inclusive)." },
+        #param { name: "anchors", type: #type { kind: "boolean" },
+          default: false, description: "Prefix each line with LINE:TAG| for edit.lines." },
       ],
       returns: { type: #type { kind: "object", fields: [
         #param { name: "sha256", type: #type { kind: "string" },

@@ -161,6 +161,10 @@ static asngn_err mod_open_asper(asngn_ctx *c) {
     } else {
       c->asper_ok = true;
       asper_set_logger(c->asper, mod_asper_log, c);
+      /* Turns an earlier run left to curate wait like any others: the engine
+       * is usually opened because a turn is about to start. */
+      asper_hold(c->asper, 1);
+      asper_hold(c->asper, 0);
     }
   }
 
@@ -632,6 +636,10 @@ asngn_err asngn_modules_checkpoint(asngn_ctx *c, const char *scope,
   if (!c->asper_ok || !c->asper) return ASNGN_ERR_UNSUPPORTED;
   ae = asper_checkpoint_commit(c->asper, scope, text, out_id);
   return mod_asper_err(c, ae, "checkpoint");
+}
+
+void asngn_modules_hold(asngn_ctx *c, bool on) {
+  if (c && c->asper_ok && c->asper) asper_hold(c->asper, on ? 1 : 0);
 }
 
 asngn_err asngn_modules_compact(asngn_ctx *c) {

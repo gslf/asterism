@@ -27,6 +27,7 @@ typedef struct {
   asmodel_remote_provider remote_provider;
   asmodel_capabilities caps;
   int embedding, dim;
+  double bytes_per_token;
 } oai_provider;
 
 typedef struct { char *p; size_t n, cap; } bytes;
@@ -452,13 +453,15 @@ static int build_lmstudio_responses(bytes *body, oai_provider *u,
  * template reserve. Include schemas that may be injected by the server. */
 static int request_fits(oai_provider *u, int output, const asmodel_input *input,
                         const char *schema, const asmodel_tools *tools) {
-  asmodel_provider counter = {0};
+  asmodel_provider counter = {.bytes_per_token = u->bytes_per_token};
   asmodel_token_count count = asmodel_provider_measure_prompt(&counter,input);
   if (count.admission_tokens < 0) return 0;
   if (u->caps.context_tokens <= 0) return 1;
-  size_t need = (size_t)count.admission_tokens + (size_t)output + (schema ? strlen(schema) : 0);
+  size_t extra = schema ? strlen(schema) : 0;
   if (tools) for (size_t i = 0; i < tools->count; i++)
-    need += strlen(tools->schemas[i].name)+strlen(tools->schemas[i].description)+strlen(tools->schemas[i].parameters)+128;
+    extra += strlen(tools->schemas[i].name)+strlen(tools->schemas[i].description)+strlen(tools->schemas[i].parameters)+128;
+  if (u->bytes_per_token > 1.0) extra = (size_t)((double)extra / u->bytes_per_token) + 1;
+  size_t need = (size_t)count.admission_tokens + (size_t)output + extra;
   return need <= (size_t)u->caps.context_tokens;
 }
 
@@ -727,6 +730,7 @@ int asmodel_openai_provider_create(const asmodel_spec *spec,
   u->api_key_env = odup(spec->api_key_env);
   u->remote_provider = remote_profile(spec);
   u->embedding = spec->embedding; u->dim = spec->embedding_dim;
+  u->bytes_per_token = spec->bytes_per_token;
   if (!u->base_url || !u->model) {
     oai_destroy(u); return -1;
   }

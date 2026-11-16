@@ -145,6 +145,9 @@ typedef struct {
   const char *api_key_env;
   asmodel_remote_provider remote_provider;
   int context_tokens;
+  /* Remote models have no tokenizer here: admission counts one token per
+   * this many UTF-8 bytes. 0 means 1, the only bound that is always safe. */
+  double bytes_per_token;
   int threads;
   int gpu_layers;
   int embedding;
@@ -271,6 +274,7 @@ typedef void (*asmodel_token_fn)(const char *utf8, size_t len, void *userdata);
 typedef struct {
   void *userdata;
   asmodel_token_quality token_quality;
+  double bytes_per_token; /* estimated counts only; 0 = 1 */
   const char *tokenizer_id;
   const char *chat_template_id;
   int (*generate)(void *userdata, const asmodel_input *input, const char *grammar,

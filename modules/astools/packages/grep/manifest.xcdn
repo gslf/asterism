@@ -100,6 +100,12 @@
           description: "Lines of context before and after each match.",
         },
         #param {
+          name: "anchors",
+          type: #type { kind: "boolean" },
+          default: false,
+          description: "Add anchor LINE:TAG to each match, for edit.lines.",
+        },
+        #param {
           name: "max_results",
           type: #type { kind: "integer", min: 1, max: 1000 },
           default: 200,
@@ -130,6 +136,8 @@
                 #param { name: "text", type: #type { kind: "string" },
                          required: true,
                          description: "Matched line, capped at 512 bytes." },
+                #param { name: "anchor", type: #type { kind: "string" },
+                         description: "LINE:TAG of the matched line (anchors true)." },
                 #param { name: "before",
                          type: #type { kind: "array",
                                        item: #type { kind: "string" } },

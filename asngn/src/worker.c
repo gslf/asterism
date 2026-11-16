@@ -27,6 +27,7 @@ static void task_finish(asngn_ctx *c, asngn_task *task, asngn_err verdict) {
   asngn_session *s = task->session;
   char terminal[128];
 
+  asngn_modules_hold(c, false); /* taken at submit */
   /* Persist the runtime outcome before publishing completion to any client. */
   if (t && s) {
     os_rwlock_wrlock(&s->lock);

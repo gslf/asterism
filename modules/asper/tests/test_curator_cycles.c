@@ -557,7 +557,49 @@ TEST(explicit_output_contract_preserves_source_operations) {
   free(schema);
 }
 
+/* While the host's model works nothing is curated and nothing is lost; the
+ * worker picks the turns up once the hold has been off for idle_flush. */
+TEST(hold_pauses_curation_and_keeps_turns) {
+  char root[256];
+  asper_ctx *c;
+  asper_stats st;
+  ASSERT_TRUE(test_tmpdir(root));
+  fake_curator_init(&g_cur);
+  fake_clock_set(&g_clk, T0);
+  c = open_store(root, NULL);
+  ASSERT_TRUE(c != NULL);
+  ASSERT_TRUE(fake_curator_push(&g_cur, "INSERT context | The user keeps bees\n"));
+
+  asper_hold(c, 1);
+  ASSERT_OK(fake_event_append(c, "test", ASPER_EVENT_USER, "i keep bees"));
+  ASSERT_OK(fake_event_append(c, "test", ASPER_EVENT_ASSISTANT, "ok noted"));
+  ASSERT_OK(fake_event_append(c, "test", ASPER_EVENT_USER, "thanks"));
+  ASSERT_OK(fake_event_append(c, "test", ASPER_EVENT_ASSISTANT, "sure"));
+  os_sleep_ms(150); /* a full batch is queued: the worker must not start */
+  ASSERT_EQ_INT(g_cur.calls, 0);
+  ASSERT_TRUE(asper_flush(c, 1) == ASPER_ERR_CANCELLED); /* nor a forced cycle */
+  ASSERT_OK(asper_get_stats(c, &st));
+  ASSERT_EQ_INT(st.cycles_run, 0);
+
+  asper_hold(c, 0);
+  os_sleep_ms(150); /* released, but not yet quiet for idle_flush */
+  ASSERT_EQ_INT(g_cur.calls, 0);
+  fake_clock_set(&g_clk, T0 + 31);
+  asper_worker_kick(c);
+  for (int i = 0; i < 200; i++) {
+    ASSERT_OK(asper_get_stats(c, &st));
+    if (st.cycles_run) break;
+    os_sleep_ms(10);
+  }
+  ASSERT_EQ_INT(st.cycles_run, 1);
+  ASSERT_EQ_INT((int)count_with_content(c, ASPER_SECTION_CONTEXT, "keeps bees"), 1);
+  asper_close(c);
+  fake_curator_dispose(&g_cur);
+  test_rmtree(root);
+}
+
 TEST_LIST = {
+  TEST_ENTRY(hold_pauses_curation_and_keeps_turns),
   TEST_ENTRY(explicit_output_contract_preserves_source_operations),
     TEST_ENTRY(scripted_insert_applied),
     TEST_ENTRY(overlong_content_rejected),

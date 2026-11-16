@@ -65,7 +65,7 @@ asngn_err asngn_protocol_steps(const char *schemas, bool call, bool recall,
       const char *tool = asmodel_json_string_value(asmodel_json_object_get(cmd, "tool"));
       if (!tool) { bad = 1; break; }
       if (draft && (!strcmp(tool, "edit.replace") || !strcmp(tool, "edit.insert") ||
-                    !strcmp(tool, "edit.patch"))) continue;
+                    !strcmp(tool, "edit.patch") || !strcmp(tool, "edit.lines"))) continue;
       bad |= asmodel_json_array_push(variants, variant("call", tool,
           asmodel_json_object_get(cmd, "arguments"), 0, draft && !strcmp(tool, "fs.write")));
     }

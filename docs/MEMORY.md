@@ -10,7 +10,10 @@ after a restart. The memory is the `asper` module; it lives in
    word for word. Nothing in this record is summarized away.
 2. **Notes are written in the background.** When the agent is idle, a local
    model reads the latest conversation and writes short notes: who you are,
-   what you prefer, what you are working on.
+   what you prefer, what you are working on. It never works while a request
+   is being answered: it stops, and starts again half a minute after the
+   answer. With `--once` the program does not wait for it; the notes are
+   written the next time the agent stays running.
 3. **Only the useful notes reach the model.** Before each answer the agent
    picks the notes that match your request, up to a fixed size, so a small
    model is not flooded.

@@ -505,7 +505,7 @@ static bool config_token_secret(const options *o) {
     if (o->api_base) core_buf_printf(&b, "api_base: \"%s\", ", o->api_base);
     core_buf_appends(&b, "topics: true },\n"
                          "  routines: { dir: \"routines\" },\n"
-                         "  stars: [ { name: \"default\", mode: \"chat\", profile: \"chat\" } ],\n"
+                         "  stars: [ { name: \"default\", mode: \"coding\", profile: \"coding-sandboxed\" } ],\n"
                          "}\n");
     ok = os_write_file(path, b.data, b.len) == CORE_OK;
   } else if (os_read_file(path, &text, NULL) == CORE_OK) {

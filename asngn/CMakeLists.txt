@@ -28,7 +28,7 @@ set(ASNGN_SOURCES
   src/approval_codec.c src/approval_store.c src/approval_replay.c
   src/approval_request.c
   src/tool_action.c src/action_instruction.c src/action_loop.c
-  src/native_contract.c src/native_history.c src/native_loop.c
+  src/native_contract.c src/native_history.c src/native_loop.c src/native_thread.c
   src/action_apply.c src/action_event.c src/answer.c src/tools.c
   # safety, telemetry, modules, public API
   src/safety.c src/redact.c src/secrets.c src/judge.c src/telemetry.c src/modules.c

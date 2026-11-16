@@ -25,7 +25,9 @@
   // get their own root (memory, tools, sessions, secrets) and, optionally,
   // their own bot. In a thread of the main bot, /star <name> switches.
   stars: [
-    { name: "default", mode: "chat", profile: "chat" },
+    // Tools, with a Yes/No question before each change. mode: "chat" turns
+    // the tools off.
+    { name: "default", mode: "coding", profile: "coding-sandboxed" },
     {
       name: "dev",
       root: "stars/dev",               // relative to the engine root

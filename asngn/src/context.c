@@ -29,6 +29,7 @@ void asngn_prompt_free(asngn_prompt *p) {
   free(p->system_text);
   free(p->user_text);
   free(p->selection_json);
+  free(p->context_text);
   memset(p, 0, sizeof *p);
 }
 
@@ -201,7 +202,8 @@ asngn_err asngn_context_assemble(asngn_ctx *c, asngn_session *s, asngn_turn_stat
 
   out->system_text = core_buf_detach(&sys);
   out->user_text = core_buf_detach(&usr);
-  if (!out->system_text || !out->user_text) {
+  out->context_text = core_strdup(asper_context ? asper_context : verb_text ? verb_text : "");
+  if (!out->system_text || !out->user_text || !out->context_text) {
     e = ASNGN_ERR_NOMEM;
     goto fail;
   }

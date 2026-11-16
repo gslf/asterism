@@ -102,6 +102,20 @@ asper_err asper_access_flush(asper_ctx *c) {
   return e;
 }
 
+void asper_hold(asper_ctx *c, int on) {
+  if (!c) return;
+  os_mutex_lock(&c->ev_mu);
+  if (on) {
+    c->hold++;
+    c->cycle_cancel = 1;
+  } else if (c->hold > 0 && --c->hold == 0) {
+    c->cycle_cancel = c->stop_worker ? 1 : 0;
+    c->hold_released_at = core_clock_now(&c->clock);
+    os_cond_signal(&c->ev_cv);
+  }
+  os_mutex_unlock(&c->ev_mu);
+}
+
 /* ---- shared due-work driver -------------------------------------------- */
 
 asper_err asper_run_due_work(asper_ctx *c, bool force_cycle, bool full) {
@@ -219,9 +233,13 @@ static void *asper_worker_main(void *arg) {
                            : last_review_try;
     bool maint_due = c->cfg.maintenance_interval_s > 0 &&
                      now - mbase >= c->cfg.maintenance_interval_s;
+    /* The host's model has the processor: wait until it has been done for
+     * idle_flush, so a quick follow-up message is not slowed down. */
+    core_time quiet_until = c->hold_released_at ? c->hold_released_at + c->cfg.idle_flush_s : 0;
+    bool quiet = c->hold == 0 && now >= quiet_until;
     /* Defer new cycles while a recall is waiting (recall takes priority). */
     bool can_work = c->has_curator && !c->cycle_busy &&
-                    c->recall_waiting == 0;
+                    c->recall_waiting == 0 && quiet;
     int64_t wait_ms;
 
     if (can_work && (batch_trig || idle_trig)) {
@@ -236,7 +254,9 @@ static void *asper_worker_main(void *arg) {
       c->cycle_busy = false;
       os_cond_broadcast(&c->done_cv);
       worker_maybe_compact(c);
-      if (cycle_rc != ASPER_OK && !c->stop_worker) {
+      if (cycle_rc == ASPER_ERR_CANCELLED) {
+        cycle_retry_ms = 1000;
+      } else if (cycle_rc != ASPER_OK && !c->stop_worker) {
         (void)os_cond_timedwait(&c->ev_cv, &c->ev_mu, cycle_retry_ms);
         if (cycle_retry_ms < 60000)
           cycle_retry_ms = cycle_retry_ms > 30000
@@ -273,6 +293,9 @@ static void *asper_worker_main(void *arg) {
      * pending, degraded without curator): block on the condition instead of
      * spinning — every slot release and trigger signals ev_cv. */
     if (wait_ms == 0) wait_ms = -1;
+    if (c->hold == 0 && now < quiet_until &&
+        (wait_ms < 0 || (quiet_until - now) * 1000 < wait_ms))
+      wait_ms = (quiet_until - now) * 1000;
 
     if (wait_ms < 0)
       os_cond_wait(&c->ev_cv, &c->ev_mu);
@@ -309,11 +332,13 @@ void asper_worker_stop(asper_ctx *c) {
   if (!c || !c->worker_running) return;
   os_mutex_lock(&c->ev_mu);
   c->stop_worker = true;
+  c->cycle_cancel = 1; /* a running generation ends now; its turns stay queued */
   os_cond_broadcast(&c->ev_cv);
   os_mutex_unlock(&c->ev_mu);
   os_thread_join(&c->worker);
   c->worker_running = false;
   c->stop_worker = false;
+  c->cycle_cancel = c->hold > 0;
 }
 
 void asper_worker_kick(asper_ctx *c) {

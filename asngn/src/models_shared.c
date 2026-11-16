@@ -169,6 +169,7 @@ static int loader(void *ud, const asmodel_spec *spec, asmodel_provider *out,
   /* Embedded counts already include the template. Remote admission callbacks
    * include a conservative margin and must retain their estimated label. */
   out->token_quality = spec->backend == ASMODEL_BACKEND_EMBEDDED ? ASMODEL_TOKENS_EXACT : ASMODEL_TOKENS_ESTIMATED;
+  out->bytes_per_token = c->models[slot].cfg.bytes_per_token;
   out->tokenizer_id = spec->backend == ASMODEL_BACKEND_EMBEDDED ? b->id : NULL;
   out->chat_template_id = spec->backend == ASMODEL_BACKEND_EMBEDDED ? "embedded-model-template" : NULL;
   out->destroy = destroy;
@@ -186,6 +187,7 @@ asngn_err asngn_shared_models_init(asngn_ctx *c) {
     s.remote_model=p->remote_model; s.api_key_env=p->api_key_env;
     s.auth_file=p->auth_file;
     s.remote_provider=p->remote_provider; s.context_tokens=p->ctx;
+    s.bytes_per_token=p->bytes_per_token;
     s.threads=p->threads; s.gpu_layers=p->gpu_layers; s.embedding=p->embedding;
     s.pipeline = p->pipeline;
     if (p->embedding && p->backend == ASMODEL_BACKEND_EMBEDDED) {

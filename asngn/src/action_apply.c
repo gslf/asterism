@@ -73,6 +73,7 @@ asngn_err asngn_action_apply(asngn_ctx *c, asngn_turn_state *t, asngn_step *st, 
       e = asngn_work_push(c, t, "[notice] tool discovery is disabled for this turn");
     } else {
       e = asngn_tools_select(c, t, st->text);
+      if (e == ASNGN_OK) t->discovered = true;
       if (e == ASNGN_OK)
         e = asngn_work_push(
             c, t, "[notice] tool selection replaced; use the current catalog for the next action");

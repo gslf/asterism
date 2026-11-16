@@ -26,7 +26,10 @@ class Handler(BaseHTTPRequestHandler):
             tools = request.get("tools")
             calls = []
             text = ""
-            if tools:
+            if tools and request["tool_choice"] == "none":
+                # The response pass: the same conversation and functions, no call allowed.
+                text = "Observed the tool result over the native protocol."
+            elif tools:
                 assert request["tool_choice"] == "auto"
                 definitions = tools if responses else [v["function"] for v in tools]
                 messages = request["input" if responses else "messages"]

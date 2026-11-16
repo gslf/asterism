@@ -172,6 +172,109 @@ oom:
 
 /* ---- fs.read ------------------------------------------------------------- */
 
+#define FS_ANCHOR_CAP (16u * 1024u * 1024u)
+
+/* fs.read with anchors:true. Whole lines only, each shown as "LINE:TAG|text"
+ * (see anchor.c). offset and max_bytes still count bytes of the file: an
+ * offset inside a line moves to the next line start, at least one line is
+ * returned, and next_offset says where to continue when truncated. */
+static int cmd_read_anchors(astd_req *r, const char *path, int64_t offset,
+                            int64_t max_bytes) {
+  struct stat st;
+  char *buf, *text;
+  size_t n = 0, start, end, i;
+  int64_t first_line = 1;
+  int fd;
+  xcdn_value_t *res, *content;
+
+  fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    fail_errno(r, errno, path);
+    return 0;
+  }
+  if (fstat(fd, &st) != 0) {
+    int e = errno;
+    close(fd);
+    fail_errno(r, e, path);
+    return 0;
+  }
+  if (S_ISDIR(st.st_mode)) {
+    close(fd);
+    astd_fail(r, "fs/is-dir", "%s: is a directory", path);
+    return 0;
+  }
+  if (st.st_size < 0 || (uint64_t)st.st_size > FS_ANCHOR_CAP) {
+    close(fd);
+    astd_fail(r, "fs/not-text", "%s: anchors need a text file up to %u bytes",
+              path, (unsigned)FS_ANCHOR_CAP);
+    return 0;
+  }
+  buf = malloc((size_t)st.st_size + 1);
+  if (!buf) {
+    close(fd);
+    fail_oom(r);
+    return 0;
+  }
+  while (n < (size_t)st.st_size) {
+    ssize_t rd = read(fd, buf + n, (size_t)st.st_size - n);
+    if (rd < 0) {
+      int e = errno;
+      if (e == EINTR) continue;
+      free(buf);
+      close(fd);
+      fail_errno(r, e, path);
+      return 0;
+    }
+    if (rd == 0) break;
+    n += (size_t)rd;
+  }
+  close(fd);
+  if (memchr(buf, '\0', n) != NULL) {
+    free(buf);
+    astd_fail(r, "fs/not-text", "%s: anchors need a text file", path);
+    return 0;
+  }
+  start = (uint64_t)offset > n ? n : (size_t)offset;
+  while (start > 0 && start < n && buf[start - 1] != '\n') start++;
+  for (i = 0; i < start; i++)
+    if (buf[i] == '\n') first_line++;
+  end = start;
+  while (end < n) {
+    const char *nl = memchr(buf + end, '\n', n - end);
+    size_t next = nl ? (size_t)(nl - buf) + 1 : n;
+    if (end > start && (uint64_t)(next - start) > (uint64_t)max_bytes) break;
+    end = next;
+  }
+  text = astd_anchor_text(buf + start, end - start, first_line, NULL);
+  free(buf);
+  if (!text) {
+    fail_oom(r);
+    return 0;
+  }
+  content = xcdn_value_string_owned(text);
+  if (!content) {
+    free(text);
+    fail_oom(r);
+    return 0;
+  }
+  res = xcdn_value_object();
+  if (!res) {
+    xcdn_value_free(content);
+    fail_oom(r);
+    return 0;
+  }
+  if (astd_set_val(res, "content", content) != 0 ||
+      astd_set_int(res, "size", (int64_t)n) != 0 ||
+      astd_set_bool(res, "truncated", end < n) != 0 ||
+      (end < n && astd_set_int(res, "next_offset", (int64_t)end) != 0)) {
+    xcdn_value_free(res);
+    fail_oom(r);
+    return 0;
+  }
+  astd_ok(r, res);
+  return 0;
+}
+
 static int cmd_read(astd_req *r) {
   const char *path = astd_arg_str(r, "path", NULL);
   int64_t offset = astd_arg_int(r, "offset", 0);
@@ -198,6 +301,13 @@ static int cmd_read(astd_req *r) {
   if (strcmp(enc, "utf8") != 0 && strcmp(enc, "base64") != 0) {
     astd_fail(r, "astools/invalid-args", "encoding must be utf8 or base64");
     return 0;
+  }
+  if (astd_arg_bool(r, "anchors", 0)) {
+    if (strcmp(enc, "utf8") != 0) {
+      astd_fail(r, "astools/invalid-args", "anchors need encoding utf8");
+      return 0;
+    }
+    return cmd_read_anchors(r, path, offset, max_bytes);
   }
 
   fd = open(path, O_RDONLY);

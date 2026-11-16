@@ -26,6 +26,7 @@ asmodel_token_count asmodel_provider_measure_prompt(const asmodel_provider *p,
    * Validation bounds every operand. Schemas are counted by the request adapter. */
   size_t reserve = 256;
   for (size_t i = 0; i < input->count; i++) reserve += 32*(1+input->messages[i].count);
+  if (p->bytes_per_token > 1.0) bytes = (size_t)((double)bytes / p->bytes_per_token) + 1;
   r.admission_tokens = bytes+reserve > INT_MAX ? INT_MAX : (int)(bytes+reserve);
   if (r.admission_tokens < r.tokens) r.admission_tokens = r.tokens;
   return r;

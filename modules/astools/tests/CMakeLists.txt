@@ -57,6 +57,10 @@ target_compile_definitions(astools_test_std_semantic PRIVATE
   "ASTOOLS_STD_PACKAGES=\"${CMAKE_BINARY_DIR}/packages\""
   "ASTOOLS_TEST_CMAKE_BIN=\"${ASTOOLS_CMAKE_BIN}\"")
 add_dependencies(astools_test_std_semantic astools_packages)
+astools_test(std_anchors SOURCES ../std/anchor.c)
+target_compile_definitions(astools_test_std_anchors PRIVATE
+  "ASTOOLS_STD_PACKAGES=\"${CMAKE_BINARY_DIR}/packages\"")
+add_dependencies(astools_test_std_anchors astools_packages)
 if(NOT WIN32)
   astools_test(std_containment)
   target_compile_definitions(astools_test_std_containment PRIVATE

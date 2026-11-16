@@ -82,6 +82,18 @@ int astd_glob_match(const char *pattern, const char *path);
 /* 1 when buf[0..n) looks binary (NUL byte in the first 4 KiB). */
 int astd_looks_binary(const char *buf, size_t n);
 
+/* ---- anchor.c — line anchors "LINE:TAG" ---------------------------------
+ * The tag is 3 chars of [0-9a-z]: FNV-1a of the line without its terminator
+ * and trailing spaces/tabs/CRs, folded and reduced modulo 36^3. */
+void astd_line_tag(const char *line, size_t len, char out[4]);
+/* Copy buf with every line prefixed "LINE:TAG|", numbering from first_line.
+ * Line terminators are kept as they are. malloc'd, NUL-terminated; NULL on
+ * OOM. */
+char *astd_anchor_text(const char *buf, size_t n, int64_t first_line,
+                       size_t *out_n);
+/* Parse "42:ab3" (a pasted "42:ab3|text" also works). 0 on success. */
+int astd_anchor_parse(const char *s, int64_t *line, char tag[4]);
+
 /* ---- child process runner ----------------------------------------------
  * Shared by proc.run and closed-argv semantic wrappers.  This is an
  * implementation detail of astools-std, not part of libastools. */
