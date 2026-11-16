@@ -29,6 +29,11 @@ jobs:
           cmake --build build -j 4
       - name: Fetch models and tools
         run: scripts/fetch-models.sh demo --repair --install-tools
+      - name: Write the engine config
+        # Each trial gets a new engine root with only config.xcdn and the
+        # models, so the tool packages are named by absolute path.
+        run: |
+          printf '#asngn_config {\n  integration: { astools: { root: "%s/demo/tools" } },\n}\n' "$PWD" > demo/config.xcdn
       - name: Run quality suite
         run: |
           python3 asngn/tests/quality/run_quality.py --asngn build/bin/asterism --engine-root demo \

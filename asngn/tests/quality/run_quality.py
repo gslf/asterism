@@ -108,7 +108,7 @@ def telemetry(path, session):
           "invalid_tool_calls":len(re.findall(r"invalid-args|malformed call|protocol failure",joined,re.I))}
 
 def evaluate(binary, source_engine, artifacts, task, timeout_s):
-  started=time.monotonic(); session=f"quality-{task['name']}-{uuid.uuid4().hex[:8]}"
+  started=time.monotonic(); session=f"quality-{task['name'].replace('_','-')}-{uuid.uuid4().hex[:8]}"
   with tempfile.TemporaryDirectory(prefix="asngn-quality-") as td:
     repo = Path(td) / 'workspace'
     engine = Path(td) / 'engine'
