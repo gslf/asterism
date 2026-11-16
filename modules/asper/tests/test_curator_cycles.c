@@ -585,7 +585,11 @@ TEST(hold_pauses_curation_and_keeps_turns) {
   os_sleep_ms(150); /* released, but not yet quiet for idle_flush */
   ASSERT_EQ_INT(g_cur.calls, 0);
   fake_clock_set(&g_clk, T0 + 31);
+#ifdef ASTERISM_NO_THREADS
+  ASSERT_OK(asper_flush(c, 1)); /* no worker: the host drives the cycle */
+#else
   asper_worker_kick(c);
+#endif
   for (int i = 0; i < 200; i++) {
     ASSERT_OK(asper_get_stats(c, &st));
     if (st.cycles_run) break;

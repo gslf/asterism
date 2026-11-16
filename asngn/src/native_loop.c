@@ -224,6 +224,7 @@ asngn_err asngn_native_answer(asngn_ctx *c, asngn_turn_state *t, const char *tra
                               asngn_token_fn cb, void *cb_ud, char **out, int *out_tokens) {
   asngn_native_thread *th = t->native_pending;
   if (!th || !th->n || th->v[0].role != 's') return ASNGN_ERR_UNSUPPORTED;
+  *out = NULL;
   asngn_native_contract *contract = calloc(1, sizeof *contract);
   if (!contract) return ASNGN_ERR_NOMEM;
   asngn_native_history none = {0};
@@ -242,10 +243,11 @@ asngn_err asngn_native_answer(asngn_ctx *c, asngn_turn_state *t, const char *tra
   if (e == ASNGN_OK)
     e = asngn_generate_input(c, t, t->gen_slot, ASNGN_TASK_ANSWER, &input, NULL, NULL, &tools, cap,
                              cb, cb_ud, out, &tin, &tout);
-  if (e == ASNGN_OK && (calls.count || !*out || !(*out)[strspn(*out, " \t\r\n")])) {
+  if (e == ASNGN_OK && (calls.count || !*out || !(*out)[strspn(*out, " \t\r\n")]))
+    e = ASNGN_ERR_PROTOCOL; /* the caller falls back to the plain response prompt */
+  if (e != ASNGN_OK) { /* a failed call can still hand back partial text */
     free(*out);
     *out = NULL;
-    e = ASNGN_ERR_PROTOCOL; /* the caller falls back to the plain response prompt */
   }
   if (out_tokens) *out_tokens = tout;
   asmodel_tool_calls_clear(&calls);
