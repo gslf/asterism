@@ -690,6 +690,7 @@ static void send_approval(struct serve_daemon *d, serve_approval_job *job) {
    * deny it rather than leave the turn without buttons. */
   bool sent = false;
   aslink_status st;
+  memset(&st, 0, sizeof st);
   for (int attempt = 0; attempt < 4 && !sent && !d->stop; attempt++) {
     if (attempt) {
       int wait = st.retry_after_s > 0 && st.retry_after_s <= 30 ? st.retry_after_s * 10 : 5 << attempt;
@@ -1165,6 +1166,7 @@ static aslink_ctx *open_bot(struct serve_daemon *d, const char *env, char *err, 
   aslink_ctx *bot = NULL;
   aslink_bot_info info;
   aslink_status st;
+  memset(&st, 0, sizeof st);
   aslink_err e;
   if (env == d->cfg.token_env && d->cfg.token_secret[0]) {
     if (!(secret = vault_token(d, d->cfg.token_secret, err, n))) return NULL;
